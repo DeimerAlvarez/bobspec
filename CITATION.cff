@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use bobspec in your research, please cite it as below."
+title: "bobspec: interactive and batch tools for one-dimensional stellar spectra"
+type: software
+version: 0.3.0
+license: MIT
+repository-code: "https://github.com/DeimerAlvarez/bobspec"
+keywords:
+  - astronomy
+  - stellar spectroscopy
+  - radial velocities
+  - continuum normalisation
+authors:
+  - family-names: "Alvarez Garay"
+    given-names: "Deimer Antonio"
+    orcid: "https://orcid.org/0000-0002-9156-0729"
+    affiliation: "INAF - Osservatorio Astrofisico di Arcetri"

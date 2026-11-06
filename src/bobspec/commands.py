@@ -20,6 +20,7 @@ import numpy as np
 from bobspec import continuum as cont
 from bobspec import spectrum as sp
 from bobspec.barycentric import Observation, barycentric_correction, mid_exposure_mjd, observation_from_eso_header
+from bobspec.constants import MAD_TO_SIGMA
 from bobspec.coords import parse_coordinates
 from bobspec.io import (
     FITS_SUFFIXES,
@@ -1197,3 +1198,147 @@ def cmd_sline(ns: argparse.Namespace) -> Result:
     session = start_session(ns.spectrum, root, settings, output, append=ns.append, rng=np.random.default_rng(ns.seed))
     session.run()
     return {"spectrum": ns.spectrum, "output": str(output), "n_lines": len(session.written)}
+
+
+# ----------------------------------------------------------------------------- equivalent widths
+def nrv_name(spectrum: str) -> Path:
+    """``<name>_nrv`` with the same extension (and so the same format) as ``spectrum``."""
+    path = Path(spectrum)
+    if is_fits(path):
+        return companion(path, "_nrv.fits")
+    suffix = path.suffix or ".txt"
+    return companion(path, f"_nrv{suffix}")
+
+
+@command(
+    "ew",
+    arg("spectrum", help="spectrum (FITS or ASCII), normalised or not, RV-corrected or not"),
+    arg("linelist", help="line list: wavelength [A] and species code in Kurucz format (26.00), first two columns"),
+    arg("--resol", type=positive_float, help="first-guess resolving power (default: estimated from the spectrum)"),
+    arg("--order", type=int, default=5, help="continuum polynomial order; -1 = continuum fixed at 1 (default 5)"),
+    arg(
+        "--continuum", choices=("legendre", "spline"), default="legendre", help="continuum function (default legendre)"
+    ),
+    arg("--knots", type=positive_int, default=10, help="interior knots of the spline continuum (default 10)"),
+    arg("--fwhm-const", action="store_true", help="same FWHM in A at all wavelengths (default: constant R)"),
+    arg("--fix-fwhm", action="store_true", help="keep the first-guess FWHM (needs --resol)"),
+    arg("--core", type=nonneg_float, default=10.0, help="residual core flux of strong lines, percent (default 10)"),
+    arg("--vmin", type=float, default=-500.0, help="RV search window, km/s (default -500)"),
+    arg("--vmax", type=float, default=500.0, help="RV search window, km/s (default 500)"),
+    arg("--rv", type=float, help="known RV: search only within +-20 km/s of it"),
+    arg("--wmin", type=float, help="first wavelength used (default: start of the spectrum)"),
+    arg("--wmax", type=float, help="last wavelength used (default: end of the spectrum)"),
+    arg("--mask", help="file with extra regions to mask (two columns, observed frame)"),
+    arg("--no-mask", action="store_true", help="do not mask Na D, H alpha and the O2 B and A bands"),
+    arg("--threshold", type=positive_float, default=3.0, help="line detection threshold in sigma (default 3)"),
+    arg("--tol", type=positive_float, default=0.1, help="FWHM convergence tolerance in pixels (default 0.1)"),
+    arg("--max-iter", type=positive_int, default=20, help="maximum FWHM iterations (default 20)"),
+    arg("--fwhm-max", type=positive_float, default=50.0, help="largest accepted FWHM in pixels (default 50)"),
+    arg("--white-noise-errors", action="store_true", help="do not correct the EW errors for correlated noise"),
+    arg("--half-depth-fwhm", action="store_true", help="FWHM column: width at half depth (includes saturation)"),
+    arg("-o", "--output", help="EW table (default <spectrum>_ew.txt)"),
+    arg("--nrv", help="normalised, rest-frame spectrum (default <spectrum>_nrv, same format as the input)"),
+    arg("--pdf", help="PDF report with the plots of the fits (default <spectrum>_ew.pdf)"),
+    arg("--no-pdf", action="store_true", help="do not write the PDF report (faster for long lists)"),
+    batch_summary="bob_ew.log",
+)
+def cmd_ew(ns: argparse.Namespace) -> Result:
+    """Measure equivalent widths and line FWHMs automatically (DAOSPEC/4DAO-like).
+
+    Only the spectrum and a line list (wavelength, Kurucz code) are needed.
+    Lines are found in the whole spectrum and fitted together with saturated
+    Gaussians against an effective continuum; the RV comes from the list; the
+    common FWHM is iterated until it converges (4DAO), then every identified
+    line is refitted on its own to measure its FWHM.
+
+    Writes <spectrum>_ew.txt with a header and six columns: wavelength [A],
+    EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
+    that of the Gaussian under the saturated profile, so strong and weak lines
+    give the same R; --half-depth-fwhm gives the width at half depth instead
+    (larger for strong lines). Unless --no-pdf, <spectrum>_ew.pdf shows the
+    spectrum with its continuum, every line with its fit (lines not identified
+    in blue at the end), and the RV and R of the lines. Also writes
+    <spectrum>_nrv.fits (or .txt/.dat, as the input): normalised, rest frame.
+    With @list, the summary of all spectra goes to bob_ew.log.
+    """
+    from bobspec.ew import DEFAULT_MASKS, EWSettings, format_table, measure_ew, read_kurucz_linelist, read_masks
+
+    if ns.fix_fwhm and ns.resol is None:
+        raise UsageError("ew: --fix-fwhm needs --resol")
+    masks = () if ns.no_mask else DEFAULT_MASKS
+    if ns.mask:
+        masks = (*masks, *read_masks(ns.mask))
+    settings = EWSettings(
+        resolution=ns.resol,
+        order=ns.order,
+        continuum=ns.continuum,
+        knots=ns.knots,
+        scale_fwhm=not ns.fwhm_const,
+        fix_fwhm=ns.fix_fwhm,
+        core=ns.core,
+        vmin=ns.vmin,
+        vmax=ns.vmax,
+        rv=ns.rv,
+        wmin=ns.wmin,
+        wmax=ns.wmax,
+        masks=masks,
+        threshold=ns.threshold,
+        tol=ns.tol,
+        max_iter=ns.max_iter,
+        fwhm_max=ns.fwhm_max,
+        correlated_noise=not ns.white_noise_errors,
+    )
+    spec = read_spectrum(ns.spectrum)
+    lab_wave, lab_code = read_kurucz_linelist(ns.linelist)
+    result = measure_ew(spec, lab_wave, lab_code, settings)
+    run = result.run
+
+    print(f"\n{'FWHM':>8s} {'RE':>4s} {'RV1':>9s} {'RV':>9s} {'RV2':>9s}")
+    for i, (w_in, _w_out, v1, rv, v2) in enumerate(result.history):
+        label = "(FIXED)" if i == len(result.history) - 1 else ""
+        print(f"{w_in:8.3f} {result.core:4.0f} {v1:9.1f} {rv:9.2f} {v2:9.1f}  {label}")
+    status = {1: "FWHM CONVERGED", 0: "MAX ITERATIONS REACHED", -1: "FWHM CYCLING", -2: "FWHM OUT OF RANGE"}
+    print(status[result.convergence])
+
+    table = Path(ns.output) if ns.output else companion(ns.spectrum, "_ew.txt")
+    table.write_text(format_table(run.lines, half_depth=ns.half_depth_fwhm))
+    nrv = Path(ns.nrv) if ns.nrv else nrv_name(ns.spectrum)
+    write_spectrum(nrv, result.normalized_rest(Path(ns.spectrum).name))
+    resolutions = np.array([line.resolution for line in run.lines])
+    resolutions = resolutions[np.isfinite(resolutions)]
+    r_lines = (
+        f"R from the line FWHMs: median {np.median(resolutions):.0f}, "
+        f"scatter {MAD_TO_SIGMA * np.median(np.abs(resolutions - np.median(resolutions))):.0f} "
+        f"({resolutions.size} lines)"
+        if resolutions.size
+        else "no line FWHM measured"
+    )
+    print(
+        f"\nRV {run.rv:.3f} +- {run.rv_sigma:.3f} km/s  {len(run.lines)} lines  residuals {run.residual_pct:.3f}%  "
+        f"noise factor {run.noise_factor:.2f}\n{r_lines}\n"
+        f"Common FWHM of the joint fit: {result.fwhm_pix:.3f} pix (R {result.resolution:.0f})"
+    )
+    if run.missing.size:
+        print(f"Lines of the list not identified ({run.missing.size}): " + " ".join(f"{w:.3f}" for w in run.missing))
+    saved = [str(table), str(nrv)]
+    if not ns.no_pdf:
+        from bobspec.ew_report import write_ew_report
+
+        pdf = Path(ns.pdf) if ns.pdf else companion(ns.spectrum, "_ew.pdf")
+        write_ew_report(pdf, result, Path(ns.spectrum).name, masks)
+        saved.append(str(pdf))
+    print("Saved " + ", ".join(saved))
+    return {
+        "star": Path(ns.spectrum).name,
+        "R_lines": float(np.median(resolutions)) if resolutions.size else np.nan,
+        "FWHM": result.fwhm_pix,
+        "RV": run.rv,
+        "eRV": run.rv_sigma,
+        "Nlin": len(run.lines),
+        "RES(%)": run.residual_pct,
+        "CONV": result.convergence,
+        "WAVE1": float(run.wave[0]),
+        "WAVE2": float(run.wave[-1]),
+        "RE": result.core,
+        "noise_factor": run.noise_factor,
+    }

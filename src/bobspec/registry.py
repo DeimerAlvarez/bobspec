@@ -71,6 +71,8 @@ class Command:
     handler: Handler
     parser: CommandParser
     batchable: bool
+    batch_summary: str | None = None
+    """Fixed name of the batch results table (default: ``<FILE name>_<command>.txt``)."""
 
 
 @dataclass(slots=True)
@@ -102,13 +104,18 @@ batch mode (IRAF style):
 
 
 def command(
-    name: str, *args: ArgSpec, batchable: bool = True, aliases: Iterable[str] = ()
+    name: str,
+    *args: ArgSpec,
+    batchable: bool = True,
+    aliases: Iterable[str] = (),
+    batch_summary: str | None = None,
 ) -> Callable[[Handler], Handler]:
     """Register the decorated handler as command ``name``.
 
     The handler's docstring is the help text; its first line is the summary
     shown by ``help``. When ``batchable`` is True the command also accepts
-    ``@FILE`` as first argument (see :func:`run_batch`).
+    ``@FILE`` as first argument (see :func:`run_batch`); ``batch_summary``
+    fixes the name of its results table.
     """
 
     def decorator(handler: Handler) -> Handler:
@@ -117,7 +124,7 @@ def command(
         parser = CommandParser(prog=name, description=doc, epilog=epilog)
         for flags, kwargs in args:
             parser.add_argument(*flags, **kwargs)
-        COMMANDS[name] = Command(name, doc.splitlines()[0] if doc else "", handler, parser, batchable)
+        COMMANDS[name] = Command(name, doc.splitlines()[0] if doc else "", handler, parser, batchable, batch_summary)
         ALIASES.update({alias: name for alias in aliases})
         return handler
 
@@ -217,29 +224,43 @@ def run_batch(cmd: Command, tokens: list[str]) -> list[Row]:
     rows: list[Row] = []
     n_ok = n_failed = 0
     for lineno, line_tokens in lines:
-        if line_tokens[0].startswith("@"):
-            log.error("%s:%d: nested @ lists are not allowed", list_file, lineno)
-            n_failed += 1
-            continue
-        args = [*common, *line_tokens]
-        log.info("[%s:%d] %s %s", list_file.name, lineno, cmd.name, shlex.join(args))
         try:
-            result = cmd.handler(cmd.parser.parse_args(args))
-        except HelpRequested:
-            continue
-        except Exception as exc:  # batch boundary: one bad line must not stop the list
-            log.error("%s:%d: %s", list_file, lineno, exc)
-            log.debug("Traceback:", exc_info=True)
-            n_failed += 1
-            continue
-        n_ok += 1
-        rows.extend({"line": lineno, **row} for row in _as_rows(result))
+            if line_tokens[0].startswith("@"):
+                log.error("%s:%d: nested @ lists are not allowed", list_file, lineno)
+                n_failed += 1
+                continue
+            args = [*common, *line_tokens]
+            log.info("[%s:%d] %s %s", list_file.name, lineno, cmd.name, shlex.join(args))
+            try:
+                result = cmd.handler(cmd.parser.parse_args(args))
+            except HelpRequested:
+                continue
+            except Exception as exc:  # batch boundary: one bad line must not stop the list
+                log.error("%s:%d: %s", list_file, lineno, exc)
+                log.debug("Traceback:", exc_info=True)
+                n_failed += 1
+                continue
+            n_ok += 1
+            rows.extend({"line": lineno, **row} for row in _as_rows(result))
+        finally:
+            _separator()  # after every line, also when it failed
     log.info("%s: %d line(s) processed, %d failed.", cmd.name, n_ok, n_failed)
     if rows:
-        table = summary or default_table(list_file, cmd.name)
+        default = list_file.with_name(cmd.batch_summary) if cmd.batch_summary else default_table(list_file, cmd.name)
+        table = summary or default
         write_table(table, rows)
         log.info("Results table: %s", table)
     return rows
+
+
+BATCH_SEPARATOR = "-" * 70
+"""Line printed after each entry of a batch list, so that the outputs are easy to tell apart."""
+
+
+def _separator() -> None:
+    for handler in logging.getLogger().handlers:  # keep the order with the log messages
+        handler.flush()
+    print(BATCH_SEPARATOR, flush=True)
 
 
 def _as_rows(result: Result) -> list[Row]:

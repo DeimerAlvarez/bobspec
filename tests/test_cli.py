@@ -165,3 +165,15 @@ def test_add_noise_command(tmp_path: Path, spectrum_file: Path) -> None:
     files = sorted(outdir.glob("star_50_*.fits"))
     assert len(files) == 3
     assert read_spectrum(files[0]).wave[1] - read_spectrum(files[0]).wave[0] == pytest.approx(0.1)
+
+
+def test_batch_separator_after_every_line(tmp_path: Path, capsys) -> None:
+    """A line of dashes follows every entry of a batch list, also the ones that fail."""
+    from bobspec.registry import BATCH_SEPARATOR, run_batch
+
+    lst = tmp_path / "coords.txt"
+    lst.write_text("10.5 -20.25\nnot-a-number 5\n180 45\n")
+    run_batch(resolve("coords"), [f"@{lst}"])
+    out = capsys.readouterr().out
+    assert BATCH_SEPARATOR == "-" * 70
+    assert out.count(BATCH_SEPARATOR) == 3  # two successes and one failure

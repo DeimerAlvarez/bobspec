@@ -12,7 +12,7 @@ synthetic spectra, and format conversion.
 
 > New users: start from [GETTING_STARTED.md](GETTING_STARTED.md).
 >
-> **Status:** version 0.3.0, first public release. Released under the [MIT license](LICENSE).
+> **Status:** version 1.1.0. Released under the [MIT license](LICENSE).
 
 ## Who is it for
 
@@ -54,6 +54,7 @@ bob> rv star.fits template.txt star_rest.fits --snr 50 --seed 1
 bob> ipoly star_rest.fits 10 1.8 2.3 star_norm.fits
 bob> cows star.fits syn.syn 5580 5850 --resol 20000      # click continuum windows
 bob> sline star_norm.fits syn 5580 0.96 20.00             # choose lines from syn.lin
+bob> ew star.fits lines.txt                              # EWs and line FWHMs (DAOSPEC/4DAO-like)
 bob> rv @my_rv_list.txt --auto            # batch (IRAF style): one set of arguments per line
 
 $ bob helio_eso star.fits                 # one-shot use from the system shell

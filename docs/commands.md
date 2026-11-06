@@ -218,6 +218,80 @@ batch mode (IRAF style):
 ```
 
 
+## `ew` (batch)
+
+```text
+usage: ew [-h] [--resol RESOL] [--order ORDER] [--continuum {legendre,spline}] [--knots KNOTS]
+          [--fwhm-const] [--fix-fwhm] [--core CORE] [--vmin VMIN] [--vmax VMAX] [--rv RV]
+          [--wmin WMIN] [--wmax WMAX] [--mask MASK] [--no-mask] [--threshold THRESHOLD]
+          [--tol TOL] [--max-iter MAX_ITER] [--fwhm-max FWHM_MAX] [--white-noise-errors]
+          [--half-depth-fwhm] [-o OUTPUT] [--nrv NRV] [--pdf PDF] [--no-pdf]
+          spectrum linelist
+
+Measure equivalent widths and line FWHMs automatically (DAOSPEC/4DAO-like).
+
+Only the spectrum and a line list (wavelength, Kurucz code) are needed.
+Lines are found in the whole spectrum and fitted together with saturated
+Gaussians against an effective continuum; the RV comes from the list; the
+common FWHM is iterated until it converges (4DAO), then every identified
+line is refitted on its own to measure its FWHM.
+
+Writes <spectrum>_ew.txt with a header and six columns: wavelength [A],
+EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
+that of the Gaussian under the saturated profile, so strong and weak lines
+give the same R; --half-depth-fwhm gives the width at half depth instead
+(larger for strong lines). Unless --no-pdf, <spectrum>_ew.pdf shows the
+spectrum with its continuum, every line with its fit (lines not identified
+in blue at the end), and the RV and R of the lines. Also writes
+<spectrum>_nrv.fits (or .txt/.dat, as the input): normalised, rest frame.
+With @list, the summary of all spectra goes to bob_ew.log.
+
+positional arguments:
+  spectrum              spectrum (FITS or ASCII), normalised or not, RV-corrected or not
+  linelist              line list: wavelength [A] and species code in Kurucz format (26.00), first
+                        two columns
+
+options:
+  -h, --help            show this help message and exit
+  --resol RESOL         first-guess resolving power (default: estimated from the spectrum)
+  --order ORDER         continuum polynomial order; -1 = continuum fixed at 1 (default 5)
+  --continuum {legendre,spline}
+                        continuum function (default legendre)
+  --knots KNOTS         interior knots of the spline continuum (default 10)
+  --fwhm-const          same FWHM in A at all wavelengths (default: constant R)
+  --fix-fwhm            keep the first-guess FWHM (needs --resol)
+  --core CORE           residual core flux of strong lines, percent (default 10)
+  --vmin VMIN           RV search window, km/s (default -500)
+  --vmax VMAX           RV search window, km/s (default 500)
+  --rv RV               known RV: search only within +-20 km/s of it
+  --wmin WMIN           first wavelength used (default: start of the spectrum)
+  --wmax WMAX           last wavelength used (default: end of the spectrum)
+  --mask MASK           file with extra regions to mask (two columns, observed frame)
+  --no-mask             do not mask Na D, H alpha and the O2 B and A bands
+  --threshold THRESHOLD
+                        line detection threshold in sigma (default 3)
+  --tol TOL             FWHM convergence tolerance in pixels (default 0.1)
+  --max-iter MAX_ITER   maximum FWHM iterations (default 20)
+  --fwhm-max FWHM_MAX   largest accepted FWHM in pixels (default 50)
+  --white-noise-errors  do not correct the EW errors for correlated noise
+  --half-depth-fwhm     FWHM column: width at half depth (includes saturation)
+  -o OUTPUT, --output OUTPUT
+                        EW table (default <spectrum>_ew.txt)
+  --nrv NRV             normalised, rest-frame spectrum (default <spectrum>_nrv, same format as
+                        the input)
+  --pdf PDF             PDF report with the plots of the fits (default <spectrum>_ew.pdf)
+  --no-pdf              do not write the PDF report (faster for long lists)
+
+batch mode (IRAF style):
+  ew @FILE [options] [--summary TABLE]
+  Runs 'ew' once for every non-empty line of FILE. Each line holds the
+  arguments exactly as they would be typed after 'ew' (quotes and '#'
+  comments allowed). Options written after @FILE apply to every line, and a
+  line can override them. A failing line is reported and skipped; numerical
+  results are collected in the text table TABLE (default: <FILE name>_ew.txt).
+```
+
+
 ## `fitline`
 
 ```text

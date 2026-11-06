@@ -71,7 +71,7 @@ they are missing, and creates the command `bob`. Writing `python3 -m pip`
 ### 2.3 Check
 
 ```bash
-bob --version          # -> bobspec 0.3.0
+bob --version          # -> bobspec 1.1.0
 ```
 
 Optionally run the automatic checks (about 30 s):
@@ -299,6 +299,60 @@ Its resolution, read from the `# RESOL` line of the `.syn` header (or given with
 In the terminal: `y` next window, `b` previous, `w 3` writes line 3,
 `up step=10 ysta=0.3` changes settings, `e` exits.
 
+### Step 7: equivalent widths and line FWHMs
+
+`ew` measures the EW and the FWHM of the lines of a list automatically, in
+the spirit of DAOSPEC + 4DAO. It needs only the spectrum (normalised or not,
+RV-corrected or not) and a line list with wavelength and Kurucz species code
+in the first two columns (`5588.749 20.00`):
+
+```text
+bob> ew star.fits lines.txt
+bob> ew @stars.txt                         # one line per spectrum: star.fits lines.txt
+```
+
+bob removes spikes (cosmic rays, residuals of sky lines), estimates a first
+FWHM from clean lines of the spectrum (R = 20000 if it can't, e.g. at very low
+SNR; `--resol` sets it), finds all the
+lines, fits them together against an effective continuum, derives the RV from
+the lines of the list and iterates the FWHM until it converges (printed as in
+4DAO). Then every identified line is fitted on its own to measure its FWHM.
+
+It writes two files:
+
+* `star_ew.txt`, six columns, like the 4DAO `.in` file plus two, with a header
+  line `# wave EW error_Ew elem FWHM Resol`:
+  wavelength [A], EW [mA], EW error [mA], species code, FWHM [A] and
+  R = wavelength / FWHM. The FWHM is that of the Gaussian under the saturated
+  line profile: for weak lines it is the measured width, for strong lines it
+  excludes the broadening due to saturation, so all lines give the resolution
+  of the spectrum at their wavelength. `--half-depth-fwhm` writes the width at
+  half depth instead (larger for strong lines).
+* `star_nrv.fits` (or `star_nrv.txt`, `star_nrv.dat`: the same format as the
+  input): the spectrum divided by the continuum and shifted to rest frame.
+* `star_ew.pdf`: page 1 shows the spectrum with the effective continuum and,
+  below, the normalised rest-frame spectrum with the identified lines marked;
+  then 16 lines per page, with its EW and error, RV and R: in red the line
+  alone (its own fit, over the region where its FWHM is measured), in orange
+  dashed the neighbouring lines that were held fixed and subtracted, in grey
+  dashed the model of all lines (a legend at the bottom of each page explains
+  the colours); the lines of the list that
+  were not identified follow in blue, with the reason (masked, partly masked,
+  not identified); the last two pages show the RV and the R of every line
+  versus wavelength and EW, with the mean and the +-1, 2, 3 sigma bands. The
+  points have one colour per element and one symbol per ionisation stage
+  (circle I, triangle II, square III), so Fe I and Fe II share a colour; with
+  more than 20 elements the colours follow nucleosynthetic families (light,
+  odd-Z, alpha, iron peak, neutron capture) to keep the plot readable.
+  `--pdf NAME` chooses another name, `--no-pdf` skips it (faster for long lists).
+
+In batch mode `bob_ew.log` summarises every spectrum (median R of the lines,
+RV, number of lines, residuals, convergence flag). Options, rarely needed:
+`--resol` (first-guess R), `--order` (continuum polynomial, default 5;
+`--continuum spline --knots N`), `--core` (residual core flux, default 10%),
+`--rv` (known RV), `--wmin/--wmax`, `--mask FILE` / `--no-mask` (default
+masks: Na D, H alpha, O2 B and A bands).
+
 ## 6. Batch lists
 
 As in IRAF, every command marked `[@]` in `help` accepts a list file written
@@ -320,7 +374,8 @@ m54_hr15_1500200_norm.fits      syn_m54.txt   m54_hr15_1500200_rest.fits      --
 bob> rv @rv.txt --auto             # --auto: no windows and no questions, for every line
 ```
 
-A line that fails is reported and skipped; the others continue. Numerical
+In the terminal, a line of dashes separates the output of each entry of the
+list. A line that fails is reported and skipped; the others continue. Numerical
 results are collected in the text file `rv_rv.txt` (choose another name with
 `--summary`): one line per spectrum, aligned columns, column names in the
 first line after `#`. It opens in any text editor or spreadsheet, and in Python
@@ -331,6 +386,7 @@ with `astropy.table.Table.read("rv_rv.txt", format="ascii.commented_header")`.
 | Command | Writes |
 |---|---|
 | `combine` | `<out>`, `<out>_cosmics.txt`, optionally `<out>_error.fits` |
+| `ew` | `<star>_ew.txt`, `<star>_nrv.fits` (or `.txt`/`.dat`, as the input), `<star>_ew.pdf`; with `@list` also `bob_ew.log` |
 | `rv` | `<out>` (rest frame), `<out>_ccf.png`, `<out>_mc.png` |
 | `ipoly`, `ispline`, `smooth`, `manual_spline` | `<out>`, `<out>.snr`; with `--auto` also `<out>_continuum.pdf` |
 | `fitline` | `<spectrum>_lines.txt` |

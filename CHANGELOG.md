@@ -1,6 +1,28 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 1.1.0 (2026-11-05)
+
+### Added
+
+* `ew`: automatic equivalent widths and line FWHMs following DAOSPEC
+  (Stetson & Pancino 2008) and 4DAO, from just a spectrum and a line list
+  (wavelength, Kurucz code): first-guess FWHM estimated from the spectrum, line
+  finding, simultaneous saturated-Gaussian fits against an effective continuum
+  (Legendre or spline), RV from the line list, FWHM convergence loop, then an
+  individual fit of every identified line for its FWHM. EW errors corrected for
+  correlated noise. Default masks: Na D, H alpha, O2 B and A bands. Writes
+  `<star>_ew.txt` (header + wavelength, EW, eEW, code, FWHM, R), `<star>_nrv` in the
+  format of the input, the PDF report `<star>_ew.pdf` (spectrum and
+  continuum, every line with its fit, unidentified lines, RV and R of the
+  lines) and, with `@list`, `bob_ew.log`.
+  Robust for noisy spectra: cosmic rays and sky-line residuals are excluded
+  (narrow excesses above the continuum, or any excess above 50%), the
+  first-guess FWHM is measured on a smoothed spectrum, and R = 20000 is used as
+  first guess when it cannot be estimated.
+* Batch mode (`cmd @list`): a line of dashes separates the output of every
+  entry, also when it fails.
+
+## 0.3.0 (2026-10-21)
 
 First public release, rewriting the original `bob.py`/`utilities_bob.py` scripts as an
 installable, tested Python package. Numerical results differ from the scripts where

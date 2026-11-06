@@ -10,4 +10,4 @@ interactive layer (:mod:`bobspec.interactive`) and the command line
 from bobspec.io import Spec, SpectrumReadError, read_spectrum, write_spectrum
 
 __all__ = ["Spec", "SpectrumReadError", "read_spectrum", "write_spectrum"]
-__version__ = "0.3.0"
+__version__ = "1.1.0"

@@ -17,6 +17,7 @@ import numpy as np
 from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.backend_bases import Event, KeyEvent, MouseButton, MouseEvent
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from bobspec.continuum import ContinuumFit, ContinuumModel, Curve, anchor_curve, iterative_fit
@@ -203,6 +204,74 @@ def anchor_editor(spec: Spec, k: int) -> Curve | None:
     return state.curve if state.accepted else None
 
 
+RANGE_HELP = "2 right clicks: select range | left click: remove last point | ENTER: done | close window: stop"
+
+
+@dataclass
+class RangePicker:
+    """Select wavelength ranges with the mouse through event callbacks.
+
+    A right click marks an edge (dotted line), a left click (or BACKSPACE)
+    removes the last edge, two edges call ``on_range``; ENTER or a middle click
+    finishes. No ``ginput`` event loop is used, so closing the window works on
+    every backend (``ginput`` misbehaves with the macOS backend).
+    """
+
+    fig: Figure
+    ax: Axes
+    on_range: Callable[[float, float, Axes], tuple[str, list[Artist]]]
+    points: list[float] = field(default_factory=list)
+    marks: list[Artist] = field(default_factory=list)
+    artists: list[Artist] = field(default_factory=list)
+    finished: bool = False
+
+    def on_click(self, event: Event) -> None:
+        """Mouse: right adds an edge, left removes the last one, middle finishes."""
+        if not isinstance(event, MouseEvent) or event.inaxes is not self.ax or _toolbar_busy(self.fig):
+            return
+        if event.button is MouseButton.MIDDLE:
+            self.finish()
+        elif event.button is MouseButton.LEFT:
+            self.remove_last()
+        elif event.button is MouseButton.RIGHT and event.xdata is not None:
+            self.add(float(event.xdata))
+
+    def on_key(self, event: Event) -> None:
+        """Keyboard: ENTER finishes, BACKSPACE/DELETE removes the last edge."""
+        if not isinstance(event, KeyEvent):
+            return
+        if event.key in ("enter", "return"):
+            self.finish()
+        elif event.key in ("backspace", "delete"):
+            self.remove_last()
+
+    def add(self, x: float) -> None:
+        """Mark an edge; with two edges measure the range and redraw."""
+        self.points.append(x)
+        self.marks.append(self.ax.axvline(x, color="tab:green", ls=":", lw=1.2))
+        if len(self.points) == 2:
+            w1, w2 = sorted(self.points)
+            for artist in [*self.marks, *self.artists]:
+                artist.remove()
+            self.points, self.marks = [], []
+            status, self.artists = self.on_range(w1, w2, self.ax)
+            self.artists.append(self.ax.axvspan(w1, w2, color="tab:green", alpha=0.15))
+            set_title(self.ax, f"{status}\n{RANGE_HELP}")
+        self.fig.canvas.draw_idle()
+
+    def remove_last(self) -> None:
+        """Remove the last marked edge (if any)."""
+        if self.points:
+            self.points.pop()
+            self.marks.pop().remove()
+            self.fig.canvas.draw_idle()
+
+    def finish(self) -> None:
+        """Done with this item: close the window and report success."""
+        self.finished = True
+        plt.close(self.fig)
+
+
 def pick_ranges(
     spec: Spec,
     on_range: Callable[[float, float, Axes], tuple[str, list[Artist]]],
@@ -213,11 +282,11 @@ def pick_ranges(
 
     ``on_range(w1, w2, ax)`` is called for each selection; it may draw on
     ``ax`` and returns a status line for the title plus the artists to remove
-    at the next selection.
+    at the next selection (see :class:`RangePicker` for the controls).
 
     Returns:
-        True if the user finished with ENTER, False if the window was closed
-        (callers processing several items treat this as "stop").
+        True if the user finished with ENTER (or a middle click), False if the
+        window was closed (callers processing several items treat this as "stop").
     """
     fig, ax = new_figure()
     ax.plot(spec.wave, spec.flux, color="k", lw=0.8)
@@ -228,29 +297,11 @@ def pick_ranges(
             lo, hi = spec.flux[inside].min(), spec.flux[inside].max()
             pad = 0.1 * (hi - lo) or 0.1
             ax.set_ylim(lo - pad, hi + pad)
-    set_title(ax, f"{title}\n2 right clicks: select range | ENTER: done | close window: stop")
-    plt.show(block=False)
-    plt.pause(0.1)
-    artists: list[Artist] = []
-    while plt.fignum_exists(fig.number):
-        pts = fig.ginput(
-            n=2,
-            timeout=0,
-            show_clicks=True,
-            mouse_add=MouseButton.RIGHT,
-            mouse_pop=MouseButton.LEFT,
-            mouse_stop=MouseButton.MIDDLE,
-        )
-        if not plt.fignum_exists(fig.number):
-            return False
-        if len(pts) < 2:
-            plt.close(fig)
-            return True
-        w1, w2 = sorted(p[0] for p in pts)
-        for artist in artists:
-            artist.remove()
-        status, artists = on_range(w1, w2, ax)
-        artists.append(ax.axvspan(w1, w2, color="tab:green", alpha=0.15))
-        set_title(ax, f"{status}\n2 right clicks: new range | ENTER: done | close window: stop")
-        fig.canvas.draw_idle()
-    return False
+    set_title(ax, f"{title}\n{RANGE_HELP}")
+    picker = RangePicker(fig, ax, on_range)
+    fig.canvas.mpl_connect("button_press_event", picker.on_click)
+    fig.canvas.mpl_connect("key_press_event", picker.on_key)
+    with suppress_keymaps(("enter", "backspace", "delete")):
+        plt.show(block=True)
+    plt.close(fig)
+    return picker.finished

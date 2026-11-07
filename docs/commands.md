@@ -155,7 +155,8 @@ batch mode (IRAF style):
 ## `cows`
 
 ```text
-usage: cows [-h] [-o OUTPUT] [--resol RESOL] [--rv RV] [--kernel KERNEL] [--step STEP] [--append]
+usage: cows [-h] [-o OUTPUT] [--resol RESOL] [--rv RV] [--kernel KERNEL] [--step STEP]
+            [--append [FILE]]
             spectrum synthetic l1 l2
 
 Select continuum windows by clicking on the normalised spectrum.
@@ -184,7 +185,7 @@ options:
   --rv RV               RV of the observed spectrum [km/s], or 'auto' to estimate it (default 0)
   --kernel KERNEL       initial running-median kernel [pix] (default 1001)
   --step STEP           width of each selection window [A] (default 15)
-  --append              add to an existing output file instead of overwriting it
+  --append [FILE]       add to FILE (or to the -o file) instead of overwriting it
 ```
 
 
@@ -225,7 +226,7 @@ usage: ew [-h] [--resol RESOL] [--order ORDER] [--continuum {legendre,spline}] [
           [--fwhm-const] [--fix-fwhm] [--core CORE] [--vmin VMIN] [--vmax VMAX] [--rv RV]
           [--wmin WMIN] [--wmax WMAX] [--mask MASK] [--no-mask] [--threshold THRESHOLD]
           [--tol TOL] [--max-iter MAX_ITER] [--fwhm-max FWHM_MAX] [--white-noise-errors]
-          [--half-depth-fwhm] [-o OUTPUT] [--nrv NRV] [--pdf PDF] [--no-pdf]
+          [--half-depth-fwhm] [-o OUTPUT] [--nrv NRV] [--pdf PDF] [--rejected REJECTED] [--no-pdf]
           spectrum linelist
 
 Measure equivalent widths and line FWHMs automatically (DAOSPEC/4DAO-like).
@@ -240,7 +241,9 @@ Writes <spectrum>_ew.txt with a header and six columns: wavelength [A],
 EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
 that of the Gaussian under the saturated profile, so strong and weak lines
 give the same R; --half-depth-fwhm gives the width at half depth instead
-(larger for strong lines). Unless --no-pdf, <spectrum>_ew.pdf shows the
+(larger for strong lines). The lines of the list that fall in the spectrum
+but were not identified go to <spectrum>_ew_rejected.txt (wavelength, code,
+reason). Unless --no-pdf, <spectrum>_ew.pdf shows the
 spectrum with its continuum, every line with its fit (lines not identified
 in blue at the end), and the RV and R of the lines. Also writes
 <spectrum>_nrv.fits (or .txt/.dat, as the input): normalised, rest frame.
@@ -280,6 +283,7 @@ options:
   --nrv NRV             normalised, rest-frame spectrum (default <spectrum>_nrv, same format as
                         the input)
   --pdf PDF             PDF report with the plots of the fits (default <spectrum>_ew.pdf)
+  --rejected REJECTED   lines of the list not identified (default <spectrum>_ew_rejected.txt)
   --no-pdf              do not write the PDF report (faster for long lists)
 
 batch mode (IRAF style):
@@ -647,7 +651,7 @@ batch mode (IRAF style):
 
 ```text
 usage: sline [-h] [--step STEP] [--snr SNR] [--wsh WSH] [--res RES] [--ysta YSTA] [--yend YEND]
-             [-o OUTPUT] [--append] [--seed SEED]
+             [-o OUTPUT] [--append [FILE]] [--seed SEED]
              spectrum synthetic wave1 min sel
 
 Select lines from a SYNTHE line list, window by window.
@@ -683,7 +687,7 @@ options:
   --yend YEND           upper limit of the y axis (default 1.2)
   -o OUTPUT, --output OUTPUT
                         selected lines file (default linelist.txt)
-  --append              add to an existing output file instead of overwriting it
+  --append [FILE]       add to FILE (or to the -o file) instead of overwriting it
   --seed SEED           random seed for the synthetic noise (--snr)
 ```
 

@@ -71,7 +71,7 @@ they are missing, and creates the command `bob`. Writing `python3 -m pip`
 ### 2.3 Check
 
 ```bash
-bob --version          # -> bobspec 1.1.0
+bob --version          # -> bobspec 1.1.2
 ```
 
 Optionally run the automatic checks (about 30 s):
@@ -265,8 +265,9 @@ bob> fitline m54_hr15_1500138_rest.fits 7698.96 7664.90 --resol 20000
 bob> fitline m54_hr15_1500138_rest.fits --lines mylines.txt --resol 20000
 ```
 
-For each line: two right clicks select the window (repeat to refine), ENTER
-goes to the next line, closing the window stops. Results go to
+For each line: two right clicks select the window (repeat to refine; a left
+click or BACKSPACE removes the last edge), ENTER or a middle click goes to the
+next line, closing the window stops. Results go to
 `m54_hr15_1500138_rest_lines.txt`.
 
 ### Step 6: continuum windows and line lists for abundances
@@ -299,6 +300,13 @@ Its resolution, read from the `# RESOL` line of the `.syn` header (or given with
 In the terminal: `y` next window, `b` previous, `w 3` writes line 3,
 `up step=10 ysta=0.3` changes settings, `e` exits.
 
+To add lines to a file from an earlier session instead of overwriting it, use
+`--append FILE` (or `-o FILE --append`); the same works for `cows`:
+
+```text
+bob> sline star_norm.fits am154t4248g077k195_cl_ap04_5850_6150_R20000 5850 0.96 20.00 --append ca_lines.txt
+```
+
 ### Step 7: equivalent widths and line FWHMs
 
 `ew` measures the EW and the FWHM of the lines of a list automatically, in
@@ -330,6 +338,9 @@ It writes two files:
   half depth instead (larger for strong lines).
 * `star_nrv.fits` (or `star_nrv.txt`, `star_nrv.dat`: the same format as the
   input): the spectrum divided by the continuum and shifted to rest frame.
+* `star_ew_rejected.txt`: the lines of the list that fall in the spectrum but
+  were not identified, with their code and the reason (masked, partly masked,
+  not identified). The terminal shows only how many they are.
 * `star_ew.pdf`: page 1 shows the spectrum with the effective continuum and,
   below, the normalised rest-frame spectrum with the identified lines marked;
   then 16 lines per page, with its EW and error, RV and R: in red the line
@@ -341,12 +352,15 @@ It writes two files:
   not identified); the last two pages show the RV and the R of every line
   versus wavelength and EW, with the mean and the +-1, 2, 3 sigma bands. The
   points have one colour per element and one symbol per ionisation stage
-  (circle I, triangle II, square III), so Fe I and Fe II share a colour; with
+  (circle I, triangle II, square III), so Fe I and Fe II share a colour;
+  molecules (codes such as 108.00 OH, 607.00 CN, 608.00 CO) are named and drawn
+  as stars; with
   more than 20 elements the colours follow nucleosynthetic families (light,
   odd-Z, alpha, iron peak, neutron capture) to keep the plot readable.
   `--pdf NAME` chooses another name, `--no-pdf` skips it (faster for long lists).
 
-In batch mode `bob_ew.log` summarises every spectrum (median R of the lines,
+The RV is given as mean +- error of the mean (sigma / sqrt(N - 1)), followed
+by the line-to-line dispersion sigma. In batch mode `bob_ew.log` summarises every spectrum (median R of the lines,
 RV, number of lines, residuals, convergence flag). Options, rarely needed:
 `--resol` (first-guess R), `--order` (continuum polynomial, default 5;
 `--continuum spline --knots N`), `--core` (residual core flux, default 10%),

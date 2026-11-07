@@ -17,7 +17,22 @@ from bobspec.registry import execute, resolve
 
 @pytest.mark.parametrize(
     ("code", "name"),
-    [(26.00, "Fe I"), (26.01, "Fe II"), (20.0, "Ca I"), (56.01, "Ba II"), (1.0, "H I"), (106.0, "106.00")],
+    [
+        (26.00, "Fe I"),
+        (26.01, "Fe II"),
+        (20.0, "Ca I"),
+        (56.01, "Ba II"),
+        (1.0, "H I"),
+        (106.0, "CH"),
+        (108.0, "OH"),
+        (607.0, "CN"),
+        (608.0, "CO"),
+        (708.0, "NO"),
+        (606.0, "C2"),
+        (106.01, "CH+"),
+        (1406.0, "SiC"),
+        (4500.0, "4500.00"),
+    ],
 )
 def test_species_name(code: float, name: str) -> None:
     assert species_name(code) == name
@@ -132,3 +147,71 @@ def test_legend_layout_helpers() -> None:
     handles = [Line2D([], [], label=str(i)) for i in range(6)]
     ordered = [h.get_label() for h in row_major(handles, 3)]
     assert ordered == ["0", "3", "1", "4", "2", "5"]  # column-major fill that reads row by row
+
+
+# ----------------------------------------------------------------------------- version 1.1.1
+def test_molecules_get_their_own_colour_and_star_marker() -> None:
+    from bobspec.ew_report import species_styles
+
+    style = species_styles([26.0, 607.0, 608.0, 108.0])
+    labels = [h.get_label() for h in style.handles]
+    assert labels == ["Fe", "OH", "CN", "CO"]  # elements first, then molecules by code
+    assert style.marker[607.0] == style.marker[108.0] == "*"
+    colours = {style.colour[c] for c in (26.0, 607.0, 608.0, 108.0)}
+    assert len(colours) == 4
+
+
+def test_first_ten_colours_are_distinct_hues() -> None:
+    from matplotlib.colors import to_rgb
+
+    from bobspec.ew_report import species_styles
+
+    style = species_styles([12.0, 14.0, 22.0, 26.0])
+    rgb = [np.array(to_rgb(style.colour[c])) for c in (12.0, 14.0, 22.0, 26.0)]
+    gaps = [np.abs(a - b).sum() for i, a in enumerate(rgb) for b in rgb[i + 1 :]]
+    assert min(gaps) > 0.3  # no two shades of the same hue
+
+
+def test_line_panels_use_plain_tick_labels(result: ew.EWResult) -> None:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    from bobspec.ew_report import _line_page, _panels
+
+    fig = _line_page(result, _panels(result, ())[:4], "test")
+    FigureCanvasAgg(fig).draw()
+    for ax in fig.axes[:4]:
+        assert ax.xaxis.get_major_formatter().get_offset() == ""
+        assert all("e" not in t.get_text() for t in ax.get_xticklabels())
+
+
+def test_rejected_table_and_reasons(result: ew.EWResult) -> None:
+    text = ew.format_rejected(result.run, ())
+    rows = [line.split() for line in text.splitlines()[1:]]
+    assert text.startswith("#") and len(rows) == result.run.missing.size
+    waves = [float(r[0]) for r in rows]
+    assert waves == sorted(waves) and {5650.0, 5750.0} <= set(waves)
+    assert all(" ".join(r[2:]) in {"masked", "partly masked", "not identified"} for r in rows)
+
+
+def test_rv_error_of_the_mean(result: ew.EWResult) -> None:
+    run = result.run
+    assert run.rv_error == pytest.approx(run.rv_sigma / np.sqrt(len(run.lines) - 1))
+    assert run.rv_error < run.rv_sigma
+
+
+def test_command_writes_rejected_file_and_prints_only_the_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    write_spectrum("star.fits", make_spectrum(seed=6))
+    lab = np.concatenate([CENTRES, [5650.0, 5750.0]])
+    codes = np.concatenate([CODES, [607.0, 26.0]])
+    np.savetxt("lines.txt", np.column_stack([lab, codes]), fmt=("%.3f", "%.2f"))
+    row = execute(resolve("ew"), ["star.fits", "lines.txt", "--no-mask", "--no-pdf"])
+    out = capsys.readouterr().out
+    rejected = Path("star_ew_rejected.txt").read_text()
+    assert "5650.000  607.00" in rejected and "5750.000   26.00" in rejected
+    assert "Lines of the list not identified:" in out and "5650.000" not in out
+    assert row["errRV"] == pytest.approx(row["eRV"] / np.sqrt(row["Nlin"] - 1))
+    execute(resolve("ew"), ["star.fits", "lines.txt", "--no-mask", "--no-pdf", "--rejected", "other.txt"])
+    assert Path("other.txt").exists()

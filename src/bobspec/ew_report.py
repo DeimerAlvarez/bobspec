@@ -24,7 +24,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from bobspec.constants import C_KMS, MAD_TO_SIGMA
-from bobspec.ew import EWResult, MaskRegion, MeasuredLine, mask_pixels
+from bobspec.ew import EWResult, MaskRegion, MeasuredLine, mask_pixels, missing_reasons
 from bobspec.plotting import style_axes
 
 A4 = (8.27, 11.69)
@@ -48,12 +48,51 @@ _ELEMENTS = tuple(_ELEMENT_TABLE.split())  # atomic number - 1 -> symbol
 _ROMAN = ("I", "II", "III", "IV", "V", "VI")
 
 
+MOLECULES: dict[int, str] = {
+    101: "H2",
+    106: "CH",
+    107: "NH",
+    108: "OH",
+    112: "MgH",
+    114: "SiH",
+    120: "CaH",
+    126: "FeH",
+    606: "C2",
+    607: "CN",
+    608: "CO",
+    708: "NO",
+    808: "O2",
+    814: "SiO",
+    822: "TiO",
+    823: "VO",
+}
+"""Usual names of common diatomic molecules, by Kurucz/MOOG code (atomic numbers of the two atoms)."""
+
+
+def molecule_name(code: int) -> str | None:
+    """Name of a diatomic molecule from its code ``Z1 * 100 + Z2`` (e.g. 607 -> 'CN').
+
+    Codes in :data:`MOLECULES` get their usual name; any other valid code is
+    written as the two symbols in the order of the code. Returns None if the
+    code is not a valid molecule.
+    """
+    if code in MOLECULES:
+        return MOLECULES[code]
+    z1, z2 = divmod(code, 100)
+    if not (1 <= z1 <= len(_ELEMENTS) and 1 <= z2 <= len(_ELEMENTS)):
+        return None
+    return f"{_ELEMENTS[z1 - 1]}2" if z1 == z2 else f"{_ELEMENTS[z1 - 1]}{_ELEMENTS[z2 - 1]}"
+
+
 def species_name(code: float) -> str:
-    """Species from a Kurucz code: 26.00 -> 'Fe I', 26.01 -> 'Fe II' (molecules keep the code)."""
+    """Species from a Kurucz code: 26.00 -> 'Fe I', 26.01 -> 'Fe II', 607.00 -> 'CN', 106.01 -> 'CH+'."""
     z = int(np.floor(code + 1e-6))
     ion = round((code - z) * 100)
     if 1 <= z <= len(_ELEMENTS) and 0 <= ion < len(_ROMAN):
         return f"{_ELEMENTS[z - 1]} {_ROMAN[ion]}"
+    molecule = molecule_name(z) if z >= 100 else None
+    if molecule is not None and 0 <= ion <= 2:
+        return molecule + "+" * ion
     return f"{code:.2f}"
 
 
@@ -72,7 +111,7 @@ def _summary(result: EWResult, name: str) -> str:
     flags = {1: "converged", 0: "max iterations", -1: "FWHM cycling", -2: "FWHM out of range"}
     return (
         f"{name}    FWHM {result.fwhm_pix:.3f} pix (R {result.resolution:.0f})    "
-        f"RV {run.rv:.2f} ± {run.rv_sigma:.2f} km/s    {len(run.lines)} lines    "
+        f"RV {run.rv:.2f} ± {run.rv_error:.2f} km/s (\u03c3 {run.rv_sigma:.2f})    {len(run.lines)} lines    "
         f"residuals {run.residual_pct:.2f}%    {flags.get(result.convergence, result.convergence)}"
     )
 
@@ -120,9 +159,15 @@ def _overview(result: EWResult, name: str, masks: Sequence[MaskRegion]) -> Figur
     for ax in (top, bottom):
         style_axes(ax)
         ax.tick_params(labelsize=9)
+        _plain_ticks(ax)
         ax.xaxis.label.set_fontsize(11)
         ax.yaxis.label.set_fontsize(11)
     return fig
+
+
+def _plain_ticks(ax: Axes) -> None:
+    """Tick labels as plain numbers (14628, not 2 with an offset +1.4626e4)."""
+    ax.ticklabel_format(axis="both", style="plain", useOffset=False)
 
 
 def _shade(ax: Axes, wave: np.ndarray, masked: np.ndarray, label: str | None = None) -> None:
@@ -134,14 +179,11 @@ def _shade(ax: Axes, wave: np.ndarray, masked: np.ndarray, label: str | None = N
 def _panels(result: EWResult, masks: Sequence[MaskRegion]) -> list[_Panel]:
     run = result.run
     found = [_Panel(ln.wave, ln.code, ln) for ln in sorted(run.lines, key=lambda x: x.wave)]
-    missing = []
-    fwhm = float(np.median([ln.fwhm for ln in run.lines])) if run.lines else 0.0
-    for wave, code in sorted(zip(run.missing, run.missing_codes, strict=True)):
-        centre = wave * (1.0 + run.rv / C_KMS)
-        around = np.linspace(centre - fwhm, centre + fwhm, 21)
-        hit = mask_pixels(around, masks, run.rv)
-        reason = "masked" if hit[10] else "partly masked" if hit.any() else "not identified"
-        missing.append(_Panel(float(wave), float(code), None, reason))
+    reasons = missing_reasons(run, masks)
+    missing = [
+        _Panel(float(wave), float(code), None, reason)
+        for wave, code, reason in sorted(zip(run.missing, run.missing_codes, reasons, strict=True))
+    ]
     return found + missing
 
 
@@ -203,6 +245,7 @@ def _line_page(result: EWResult, panels: Sequence[_Panel], page_title: str) -> F
             )
         ax.tick_params(labelsize=5.5, direction="in", top=True, right=True, length=3)
         ax.locator_params(axis="x", nbins=3)
+        _plain_ticks(ax)
     for ax in axes[len(panels) :]:
         ax.set_axis_off()
     fig.legend(handles=_line_legend(), loc="outside lower center", ncol=3, fontsize=7, frameon=False)
@@ -263,18 +306,25 @@ def species_styles(codes: Sequence[float]) -> _Style:
 
     unique = sorted(set(codes))
     elements = sorted({split_code(c)[0] for c in unique if split_code(c)[0] < 100})
-    has_molecules = any(split_code(c)[0] >= 100 for c in unique)
+    molecules = sorted({split_code(c)[0] for c in unique if split_code(c)[0] >= 100})
+    has_molecules = bool(molecules)
     colour: dict[float, tuple[float, float, float, float] | str] = {}
     handles: list[Line2D] = []
-    if len(elements) <= MAX_ELEMENT_COLOURS:
+    if len(elements) + len(molecules) <= MAX_ELEMENT_COLOURS:  # every element and molecule its own colour
         palette = colormaps["tab20"]
-        index = {z: palette(i % 20) for i, z in enumerate(elements)}
+        order = [*range(0, 20, 2), *range(1, 20, 2)]  # the 10 distinct hues first, then their pale shades
+        index = {z: palette(order[i % 20]) for i, z in enumerate([*elements, *molecules])}
         for code in unique:
-            z = split_code(code)[0]
-            colour[code] = index[z] if z < 100 else "0.5"
+            colour[code] = index[split_code(code)[0]]
         for z in elements:
             label = _ELEMENTS[z - 1] if z <= len(_ELEMENTS) else str(z)
             handles.append(Line2D([], [], ls="", marker="o", ms=6, mfc=index[z], mec="k", mew=0.4, label=label))
+        for z in molecules:
+            label = molecule_name(z) or str(z)
+            handles.append(
+                Line2D([], [], ls="", marker=_MOLECULE_MARKER, ms=8, mfc=index[z], mec="k", mew=0.4, label=label)
+            )
+        has_molecules = False  # already in the legend, one entry each
     else:
         used = sorted({family_of(split_code(c)[0]) for c in unique if split_code(c)[0] < 100})
         for code in unique:
@@ -358,6 +408,7 @@ def _scatter_page(
             ax.set_ylim(centre - span, centre + span)
         style_axes(ax)
         ax.tick_params(labelsize=9)
+        _plain_ticks(ax)
         ax.xaxis.label.set_fontsize(11)
         ax.yaxis.label.set_fontsize(11)
     reference, _ = axes[0].get_legend_handles_labels()

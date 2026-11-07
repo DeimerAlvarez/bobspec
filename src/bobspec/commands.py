@@ -864,6 +864,23 @@ def cmd_fitline(ns: argparse.Namespace) -> Result:
     return rows
 
 
+# ----------------------------------------------------------------------------- output files
+def append_target(output: str | None, append: bool | str, default: str) -> tuple[Path, bool]:
+    """Output file and append flag from ``-o`` and ``--append [FILE]``.
+
+    ``--append FILE`` appends to FILE; ``--append`` alone appends to the ``-o``
+    file (or ``default``). Giving two different files is an error.
+
+    Raises:
+        UsageError: If ``-o`` and ``--append FILE`` name different files.
+    """
+    if isinstance(append, str):
+        if output is not None and Path(output) != Path(append):
+            raise UsageError(f"-o {output} and --append {append} name two different files: give only one")
+        return Path(append), True
+    return Path(output or default), bool(append)
+
+
 # ----------------------------------------------------------------------------- combination
 _GLOB_CHARS = frozenset("*?[")
 
@@ -1075,12 +1092,19 @@ def odd_kernel(text: str) -> int:
     arg("synthetic", help="synthetic spectrum (2-column ASCII or FITS; 4-column SYNTHE file with --resol)"),
     arg("l1", type=float, help="start of the region [A]"),
     arg("l2", type=float, help="end of the region [A]"),
-    arg("-o", "--output", default="wind_continuum.txt", help="continuum windows file (default wind_continuum.txt)"),
+    arg("-o", "--output", help="continuum windows file (default wind_continuum.txt)"),
     arg("--resol", type=positive_float, help="degrade the SYNTHE synthetic to this resolving power"),
     arg("--rv", default="0", help="RV of the observed spectrum [km/s], or 'auto' to estimate it (default 0)"),
     arg("--kernel", type=odd_kernel, default=1001, help="initial running-median kernel [pix] (default 1001)"),
     arg("--step", type=positive_float, default=15.0, help="width of each selection window [A] (default 15)"),
-    arg("--append", action="store_true", help="add to an existing output file instead of overwriting it"),
+    arg(
+        "--append",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="FILE",
+        help="add to FILE (or to the -o file) instead of overwriting it",
+    ),
     batchable=False,
 )
 def cmd_cows(ns: argparse.Namespace) -> Result:
@@ -1125,8 +1149,8 @@ def cmd_cows(ns: argparse.Namespace) -> Result:
     with np.errstate(divide="ignore", invalid="ignore"):
         norm = part.with_flux(np.where(continuum > 0, part.flux / continuum, np.nan))
 
-    output = Path(ns.output)
-    if not (ns.append and output.is_file()):
+    output, append = append_target(ns.output, ns.append, "wind_continuum.txt")
+    if not (append and output.is_file()):
         output.write_text("")
     written = select_windows(norm, syn_part, output, ns.step)
     print(f"cows ended: {written} continuum window(s) written to {output}")
@@ -1150,8 +1174,15 @@ def cmd_cows(ns: argparse.Namespace) -> Result:
     ),
     arg("--ysta", type=float, default=0.5, help="lower limit of the y axis (default 0.5)"),
     arg("--yend", type=float, default=1.2, help="upper limit of the y axis (default 1.2)"),
-    arg("-o", "--output", default="linelist.txt", help="selected lines file (default linelist.txt)"),
-    arg("--append", action="store_true", help="add to an existing output file instead of overwriting it"),
+    arg("-o", "--output", help="selected lines file (default linelist.txt)"),
+    arg(
+        "--append",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="FILE",
+        help="add to FILE (or to the -o file) instead of overwriting it",
+    ),
     arg("--seed", type=int, help="random seed for the synthetic noise (--snr)"),
     batchable=False,
 )
@@ -1194,8 +1225,8 @@ def cmd_sline(ns: argparse.Namespace) -> Result:
         ysta=ns.ysta,
         yend=ns.yend,
     )
-    output = Path(ns.output)
-    session = start_session(ns.spectrum, root, settings, output, append=ns.append, rng=np.random.default_rng(ns.seed))
+    output, append = append_target(ns.output, ns.append, "linelist.txt")
+    session = start_session(ns.spectrum, root, settings, output, append=append, rng=np.random.default_rng(ns.seed))
     session.run()
     return {"spectrum": ns.spectrum, "output": str(output), "n_lines": len(session.written)}
 
@@ -1239,6 +1270,7 @@ def nrv_name(spectrum: str) -> Path:
     arg("-o", "--output", help="EW table (default <spectrum>_ew.txt)"),
     arg("--nrv", help="normalised, rest-frame spectrum (default <spectrum>_nrv, same format as the input)"),
     arg("--pdf", help="PDF report with the plots of the fits (default <spectrum>_ew.pdf)"),
+    arg("--rejected", help="lines of the list not identified (default <spectrum>_ew_rejected.txt)"),
     arg("--no-pdf", action="store_true", help="do not write the PDF report (faster for long lists)"),
     batch_summary="bob_ew.log",
 )
@@ -1255,13 +1287,23 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
     EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
     that of the Gaussian under the saturated profile, so strong and weak lines
     give the same R; --half-depth-fwhm gives the width at half depth instead
-    (larger for strong lines). Unless --no-pdf, <spectrum>_ew.pdf shows the
+    (larger for strong lines). The lines of the list that fall in the spectrum
+    but were not identified go to <spectrum>_ew_rejected.txt (wavelength, code,
+    reason). Unless --no-pdf, <spectrum>_ew.pdf shows the
     spectrum with its continuum, every line with its fit (lines not identified
     in blue at the end), and the RV and R of the lines. Also writes
     <spectrum>_nrv.fits (or .txt/.dat, as the input): normalised, rest frame.
     With @list, the summary of all spectra goes to bob_ew.log.
     """
-    from bobspec.ew import DEFAULT_MASKS, EWSettings, format_table, measure_ew, read_kurucz_linelist, read_masks
+    from bobspec.ew import (
+        DEFAULT_MASKS,
+        EWSettings,
+        format_rejected,
+        format_table,
+        measure_ew,
+        read_kurucz_linelist,
+        read_masks,
+    )
 
     if ns.fix_fwhm and ns.resol is None:
         raise UsageError("ew: --fix-fwhm needs --resol")
@@ -1314,13 +1356,14 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
         else "no line FWHM measured"
     )
     print(
-        f"\nRV {run.rv:.3f} +- {run.rv_sigma:.3f} km/s  {len(run.lines)} lines  residuals {run.residual_pct:.3f}%  "
-        f"noise factor {run.noise_factor:.2f}\n{r_lines}\n"
+        f"\nRV {run.rv:.3f} +- {run.rv_error:.3f} km/s (error of the mean; line-to-line sigma {run.rv_sigma:.3f}, "
+        f"{len(run.lines)} lines)\nresiduals {run.residual_pct:.3f}%  noise factor {run.noise_factor:.2f}\n{r_lines}\n"
         f"Common FWHM of the joint fit: {result.fwhm_pix:.3f} pix (R {result.resolution:.0f})"
     )
-    if run.missing.size:
-        print(f"Lines of the list not identified ({run.missing.size}): " + " ".join(f"{w:.3f}" for w in run.missing))
-    saved = [str(table), str(nrv)]
+    rejected = Path(ns.rejected) if ns.rejected else companion(ns.spectrum, "_ew_rejected.txt")
+    rejected.write_text(format_rejected(run, masks))
+    print(f"Lines of the list not identified: {run.missing.size} (listed in {rejected})")
+    saved = [str(table), str(nrv), str(rejected)]
     if not ns.no_pdf:
         from bobspec.ew_report import write_ew_report
 
@@ -1334,6 +1377,7 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
         "FWHM": result.fwhm_pix,
         "RV": run.rv,
         "eRV": run.rv_sigma,
+        "errRV": run.rv_error,
         "Nlin": len(run.lines),
         "RES(%)": run.residual_pct,
         "CONV": result.convergence,

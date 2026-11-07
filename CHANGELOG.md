@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.1.2 (2026-11-07)
+
+### Fixed
+
+* `fitline`: on macOS the selection window first opened empty and closing it
+  raised `SystemError: null argument to internal routine`. The range selection
+  no longer uses matplotlib's `ginput` event loop: clicks and keys are handled
+  by callbacks in a normal window, which works on every backend. Clicks made
+  with the zoom or pan tool active are ignored, and stray keys no longer add
+  points.
+
+### Changed
+
+* `sline`, `cows`: `--append FILE` adds to FILE directly (before, `--append`
+  was a flag and worked only together with `-o FILE`); `--append` alone still
+  appends to the `-o` file or to the default one.
+
+## 1.1.1 (2026-11-06)
+
+### Changed
+
+* `ew`: the lines of the list that were not identified are written to
+  `<star>_ew_rejected.txt` (wavelength, code, reason: masked, partly masked,
+  not identified; `--rejected` chooses the name) instead of being printed; the
+  terminal shows only their number.
+* `ew`: molecules are named in the PDF from their Kurucz code (two atomic
+  numbers, e.g. 108.00 OH, 607.00 CN, 608.00 CO, 708.00 NO) and get their own
+  colour and a star symbol in the RV and R pages.
+* `ew`: the RV is reported as mean +- error of the mean, with the line-to-line
+  dispersion sigma beside it (terminal and PDF); `bob_ew.log` gains the column
+  `errRV` (error of the mean) next to `eRV` (sigma, as in 4DAO's daospec.log).
+* `ew` PDF: tick labels always as plain numbers (no offset or exponent), and
+  the first ten species get clearly different colours.
+
 ## 1.1.0 (2026-11-05)
 
 ### Added

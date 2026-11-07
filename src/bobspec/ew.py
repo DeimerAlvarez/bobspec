@@ -570,6 +570,12 @@ class RunResult:
     missing_codes: np.ndarray = field(default_factory=lambda: np.empty(0), repr=False)
     """Species codes of the ``missing`` laboratory lines."""
 
+    @property
+    def rv_error(self) -> float:
+        """Error of the mean RV: ``rv_sigma / sqrt(N - 1)`` (NaN with fewer than two lines)."""
+        n = len(self.lines)
+        return self.rv_sigma / float(np.sqrt(n - 1)) if n > 1 else float("nan")
+
 
 @dataclass(frozen=True, slots=True)
 class EWResult:
@@ -945,6 +951,34 @@ def read_kurucz_linelist(path: str) -> tuple[np.ndarray, np.ndarray]:
     if data.size == 0:
         raise EWError(f"{path}: empty line list")
     return data[:, 0], data[:, 1]
+
+
+def missing_reasons(run: RunResult, masks: Sequence[MaskRegion]) -> list[str]:
+    """Why each line of ``run.missing`` was not identified.
+
+    ``"masked"`` if its centre falls in a mask, ``"partly masked"`` if a mask
+    covers part of its profile (+-1 FWHM), otherwise ``"not identified"`` (no
+    line detected at the expected position, or its RV deviates from the others).
+    """
+    fwhm = float(np.median([ln.fwhm for ln in run.lines])) if run.lines else 0.0
+    reasons = []
+    for wave in run.missing:
+        centre = wave * (1.0 + run.rv / C_KMS)
+        hit = mask_pixels(np.linspace(centre - fwhm, centre + fwhm, 21), masks, run.rv)
+        reasons.append("masked" if hit[10] else "partly masked" if hit.any() else "not identified")
+    return reasons
+
+
+def format_rejected(run: RunResult, masks: Sequence[MaskRegion]) -> str:
+    """Table of the lines of the list that fall in the spectrum but were not identified.
+
+    Columns: wavelength [A], species code, reason (see :func:`missing_reasons`).
+    """
+    rows = ["#     wave    elem  reason\n"]
+    order = np.argsort(run.missing)
+    reasons = missing_reasons(run, masks)
+    rows += [f"{run.missing[i]:9.3f} {run.missing_codes[i]:7.2f}  {reasons[i]}\n" for i in order]
+    return "".join(rows)
 
 
 TABLE_COLUMNS = ("wave", "EW", "error_Ew", "elem", "FWHM", "Resol")

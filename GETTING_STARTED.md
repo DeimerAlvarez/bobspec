@@ -71,7 +71,7 @@ they are missing, and creates the command `bob`. Writing `python3 -m pip`
 ### 2.3 Check
 
 ```bash
-bob --version          # -> bobspec 1.1.2
+bob --version          # -> bobspec 1.2.0
 ```
 
 Optionally run the automatic checks (about 30 s):
@@ -366,6 +366,24 @@ RV, number of lines, residuals, convergence flag). Options, rarely needed:
 `--continuum spline --knots N`), `--core` (residual core flux, default 10%),
 `--rv` (known RV), `--wmin/--wmax`, `--mask FILE` / `--no-mask` (default
 masks: Na D, H alpha, O2 B and A bands).
+
+**Which lines set the common FWHM.** By default (`--fwhm-from all`) the common
+FWHM is fitted to all the lines detected in the spectrum, as in DAOSPEC: also
+blends, which make it broader, and telluric lines, which make it narrower.
+With `--fwhm-from list` only the lines of your list decide it: every
+identified line is fitted with a free width, blended lines are excluded,
+FWHM versus wavelength is fitted with a straight line rejecting outliers, and
+the EWs are measured with that relation fixed (iterated until it is stable;
+`--fwhm-const` fits a constant instead). This is the better choice with a
+curated list of clean lines. `--fwhm 0.28` fixes the FWHM (in A, at the
+central wavelength) instead. The terminal shows which FWHM was used, and the R
+page of the PDF draws it over the R of every line, with the lines not used for
+the relation faded.
+
+```text
+bob> ew star.fits clean_lines.txt --fwhm-from list
+bob> ew star.fits lines.txt --fwhm 0.28
+```
 
 ## 6. Batch lists
 

@@ -12,7 +12,7 @@ synthetic spectra, and format conversion.
 
 > New users: start from [GETTING_STARTED.md](GETTING_STARTED.md).
 >
-> **Status:** version 1.1.2. Released under the [MIT license](LICENSE).
+> **Status:** version 1.2.0. Released under the [MIT license](LICENSE).
 
 ## Who is it for
 

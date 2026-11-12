@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.2.0 (2026-11-12)
+
+### Added
+
+* `ew --fwhm A`: fixed FWHM in Angstrom (at the central wavelength), no
+  optimisation.
+* `ew --fwhm-from list`: the common FWHM is derived from the unblended lines
+  of the list only. Each identified line is fitted with a free width, blended
+  lines are excluded, FWHM versus wavelength is fitted with a straight line
+  (constant with `--fwhm-const`) rejecting outliers, and the EWs are measured
+  with that relation fixed, iterating until it is stable. The width is never
+  free in this mode. `--fwhm-from all` (default) keeps the DAOSPEC behaviour.
+* The terminal and `bob_ew.log` (`FWHM_from`, `N_FWHM`, `FWHM_slope`) report
+  how the FWHM was set; the R page of the PDF draws the FWHM used for the EWs
+  over the R of the lines, fading the lines not used for the relation.
+* Lines are flagged as blended when their neighbours absorb, within +-1 FWHM,
+  more than 10% of their depth.
+
+### Fixed
+
+* `ew`: lines found in the residuals close to an existing line (within 1.5
+  FWHM) are added only if the curvature of the spectrum shows a separate line
+  there. Before, on the wing of a line wider than the model the residual dip
+  could be added as a line, splitting it; with many narrow (e.g. telluric)
+  lines this could make the common FWHM collapse onto them. As a consequence
+  the common FWHM of crowded spectra is about 5% broader than in 1.1.x; the
+  EWs are unchanged within the errors.
+* `ew`: a warning is printed when the common FWHM ends up much narrower than
+  the first guess (suggesting `--fwhm-from list`).
+
 ## 1.1.2 (2026-11-07)
 
 ### Fixed

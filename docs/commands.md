@@ -222,11 +222,12 @@ batch mode (IRAF style):
 ## `ew` (batch)
 
 ```text
-usage: ew [-h] [--resol RESOL] [--order ORDER] [--continuum {legendre,spline}] [--knots KNOTS]
-          [--fwhm-const] [--fix-fwhm] [--core CORE] [--vmin VMIN] [--vmax VMAX] [--rv RV]
-          [--wmin WMIN] [--wmax WMAX] [--mask MASK] [--no-mask] [--threshold THRESHOLD]
-          [--tol TOL] [--max-iter MAX_ITER] [--fwhm-max FWHM_MAX] [--white-noise-errors]
-          [--half-depth-fwhm] [-o OUTPUT] [--nrv NRV] [--pdf PDF] [--rejected REJECTED] [--no-pdf]
+usage: ew [-h] [--resol RESOL] [--fwhm FWHM] [--fwhm-from {all,list}] [--order ORDER]
+          [--continuum {legendre,spline}] [--knots KNOTS] [--fwhm-const] [--fix-fwhm]
+          [--core CORE] [--vmin VMIN] [--vmax VMAX] [--rv RV] [--wmin WMIN] [--wmax WMAX]
+          [--mask MASK] [--no-mask] [--threshold THRESHOLD] [--tol TOL] [--max-iter MAX_ITER]
+          [--fwhm-max FWHM_MAX] [--white-noise-errors] [--half-depth-fwhm] [-o OUTPUT] [--nrv NRV]
+          [--pdf PDF] [--rejected REJECTED] [--no-pdf]
           spectrum linelist
 
 Measure equivalent widths and line FWHMs automatically (DAOSPEC/4DAO-like).
@@ -236,6 +237,11 @@ Lines are found in the whole spectrum and fitted together with saturated
 Gaussians against an effective continuum; the RV comes from the list; the
 common FWHM is iterated until it converges (4DAO), then every identified
 line is refitted on its own to measure its FWHM.
+
+The common FWHM can instead be fixed (--fwhm, in A) or derived from the
+unblended lines of the list only (--fwhm-from list): each line is fitted
+with a free width, blends are excluded, FWHM versus wavelength is fitted
+with outlier rejection, and the EWs are measured with that relation fixed.
 
 Writes <spectrum>_ew.txt with a header and six columns: wavelength [A],
 EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
@@ -257,6 +263,10 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resol RESOL         first-guess resolving power (default: estimated from the spectrum)
+  --fwhm FWHM           fixed FWHM [A] at the central wavelength (no optimisation)
+  --fwhm-from {all,list}
+                        lines that set the common FWHM: all the detected lines (default) or the
+                        unblended lines of the list
   --order ORDER         continuum polynomial order; -1 = continuum fixed at 1 (default 5)
   --continuum {legendre,spline}
                         continuum function (default legendre)

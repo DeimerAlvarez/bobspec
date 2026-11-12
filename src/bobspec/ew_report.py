@@ -367,13 +367,23 @@ def legend_columns(n_entries: int, max_rows: int = 3, max_cols: int = 8) -> int:
 
 
 def _scatter_page(
-    result: EWResult, values: np.ndarray, centre: float, sigma: float, ylabel: str, title: str, legend: str
+    result: EWResult,
+    values: np.ndarray,
+    centre: float,
+    sigma: float,
+    ylabel: str,
+    title: str,
+    legend: str,
+    curve: tuple[np.ndarray, np.ndarray, str] | None = None,
+    faded: np.ndarray | None = None,
 ) -> Figure:
     """Two panels: ``values`` versus wavelength and versus EW, with +-1, 2, 3 sigma bands.
 
     Points are coloured by element (by nucleosynthetic family when there are
     more than ``MAX_ELEMENT_COLOURS`` elements) with one marker per
     ionisation stage; one compact legend below the panels explains both.
+    ``curve`` (x, y, label) is drawn on the wavelength panel; points where
+    ``faded`` is True are drawn light (e.g. lines not used for the FWHM relation).
     """
     lines = result.run.lines
     waves = np.array([ln.wave for ln in lines])
@@ -390,18 +400,24 @@ def _scatter_page(
                     centre - k * sigma, centre + k * sigma, color="tab:blue", alpha=alpha, lw=0, label=f"±{k}\u03c3"
                 )
         ax.axhline(centre, color="tab:blue", lw=1.2, label=legend)
+        dim = np.zeros(len(codes), dtype=bool) if faded is None else faded
         for code in style.colour:
             sel = np.array([c == code for c in codes])
-            ax.scatter(
-                x[sel],
-                values[sel],
-                s=26,
-                color=style.colour[code],
-                marker=style.marker[code],
-                edgecolor="k",
-                lw=0.4,
-                zorder=3,
-            )
+            for part, alpha in ((sel & ~dim, 1.0), (sel & dim, 0.25)):
+                if part.any():
+                    ax.scatter(
+                        x[part],
+                        values[part],
+                        s=26,
+                        color=style.colour[code],
+                        marker=style.marker[code],
+                        edgecolor="k",
+                        lw=0.4,
+                        zorder=3,
+                        alpha=alpha,
+                    )
+        if curve is not None and ax is axes[0]:
+            ax.plot(curve[0], curve[1], color="k", lw=1.5, ls="--", zorder=4, label=curve[2])
         ax.set(xlabel=xlabel, ylabel=ylabel)
         if sigma > 0:
             span = max(4 * sigma, float(np.nanmax(np.abs(values - centre))) * 1.15)
@@ -411,8 +427,10 @@ def _scatter_page(
         _plain_ticks(ax)
         ax.xaxis.label.set_fontsize(11)
         ax.yaxis.label.set_fontsize(11)
-    reference, _ = axes[0].get_legend_handles_labels()
-    reference = [reference[-1], *reference[-2::-1]]  # mean first, then +-1, 2, 3 sigma
+    reference, labels = axes[0].get_legend_handles_labels()
+    extra = [h for h, lab in zip(reference, labels, strict=True) if curve is not None and lab == curve[2]]
+    reference = [h for h, lab in zip(reference, labels, strict=True) if curve is None or lab != curve[2]]
+    reference = [reference[-1], *reference[-2::-1], *extra]  # mean first, then +-1, 2, 3 sigma, then the curve
     ncol = max(len(reference), legend_columns(len(style.handles)))
     handles = row_major([*reference, *[_blank()] * (ncol - len(reference)), *style.handles], ncol)
     fig.legend(
@@ -459,9 +477,14 @@ def write_ew_report(path: Path, result: EWResult, name: str, masks: Sequence[Mas
             median = float(np.median(finite)) if finite.size else np.nan
             scatter = float(MAD_TO_SIGMA * np.median(np.abs(finite - median))) if finite.size else 0.0
             legend = f"median R = {median:.0f}  (scatter {scatter:.0f}, N = {finite.size})"
-            pdf.savefig(
-                _scatter_page(
-                    result, res, median, scatter, "R = λ / FWHM", f"{name}: resolving power from the line FWHMs", legend
-                )
-            )
+            model = result.fwhm_model
+            z = 1.0 + run.rv / C_KMS
+            rest = np.linspace(run.wave[0], run.wave[-1], 200) / z
+            source = {"all": "all detected lines", "list": f"{len(model.used)} lines of the list", "fixed": "fixed"}
+            curve = (rest, rest * z / model.at(rest * z), f"FWHM used for the EWs ({source[model.source]})")
+            faded = np.array([ln.wave not in set(model.used) for ln in run.lines]) if model.source == "list" else None
+            title = f"{name}: resolving power from the line FWHMs"
+            if faded is not None:
+                title += " (faded: not used for the FWHM relation)"
+            pdf.savefig(_scatter_page(result, res, median, scatter, "R = λ / FWHM", title, legend, curve, faded))
     return path

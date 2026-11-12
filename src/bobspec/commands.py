@@ -1232,6 +1232,22 @@ def cmd_sline(ns: argparse.Namespace) -> Result:
 
 
 # ----------------------------------------------------------------------------- equivalent widths
+def describe_fwhm_model(result: Any) -> str:
+    """One line on how the common FWHM used for the EWs was set (an ``EWResult``)."""
+    model = result.fwhm_model
+    fwhm, resolution = model.fwhm, model.lam_c / model.fwhm
+    shape = {1.0: "constant R", 0.0: "constant FWHM"}.get(round(model.slope, 9), f"slope {model.slope:.2f}")
+    head = f"FWHM {fwhm:.4f} A = {fwhm / result.step:.3f} pix at {model.lam_c:.1f} A (R {resolution:.0f}), {shape}"
+    if model.source == "list":
+        return (
+            f"FWHM relation from {len(model.used)} of {model.n_candidates} unblended lines of the list: {head} "
+            "(slope: 1 = constant R, 0 = constant FWHM)"
+        )
+    if model.source == "fixed":
+        return f"Fixed FWHM: {head}"
+    return f"Common FWHM from all the detected lines: {head}"
+
+
 def nrv_name(spectrum: str) -> Path:
     """``<name>_nrv`` with the same extension (and so the same format) as ``spectrum``."""
     path = Path(spectrum)
@@ -1246,6 +1262,13 @@ def nrv_name(spectrum: str) -> Path:
     arg("spectrum", help="spectrum (FITS or ASCII), normalised or not, RV-corrected or not"),
     arg("linelist", help="line list: wavelength [A] and species code in Kurucz format (26.00), first two columns"),
     arg("--resol", type=positive_float, help="first-guess resolving power (default: estimated from the spectrum)"),
+    arg("--fwhm", type=positive_float, help="fixed FWHM [A] at the central wavelength (no optimisation)"),
+    arg(
+        "--fwhm-from",
+        choices=("all", "list"),
+        default="all",
+        help="lines that set the common FWHM: all the detected lines (default) or the unblended lines of the list",
+    ),
     arg("--order", type=int, default=5, help="continuum polynomial order; -1 = continuum fixed at 1 (default 5)"),
     arg(
         "--continuum", choices=("legendre", "spline"), default="legendre", help="continuum function (default legendre)"
@@ -1283,6 +1306,11 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
     common FWHM is iterated until it converges (4DAO), then every identified
     line is refitted on its own to measure its FWHM.
 
+    The common FWHM can instead be fixed (--fwhm, in A) or derived from the
+    unblended lines of the list only (--fwhm-from list): each line is fitted
+    with a free width, blends are excluded, FWHM versus wavelength is fitted
+    with outlier rejection, and the EWs are measured with that relation fixed.
+
     Writes <spectrum>_ew.txt with a header and six columns: wavelength [A],
     EW [mA], EW error [mA], code, FWHM [A], R = wavelength / FWHM. The FWHM is
     that of the Gaussian under the saturated profile, so strong and weak lines
@@ -1307,11 +1335,17 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
 
     if ns.fix_fwhm and ns.resol is None:
         raise UsageError("ew: --fix-fwhm needs --resol")
+    if ns.fwhm is not None and (ns.resol is not None or ns.fix_fwhm):
+        raise UsageError("ew: --fwhm already fixes the FWHM; do not combine it with --resol or --fix-fwhm")
+    if ns.fwhm is not None and ns.fwhm_from == "list":
+        raise UsageError("ew: --fwhm (fixed) and --fwhm-from list exclude each other")
     masks = () if ns.no_mask else DEFAULT_MASKS
     if ns.mask:
         masks = (*masks, *read_masks(ns.mask))
     settings = EWSettings(
         resolution=ns.resol,
+        fwhm=ns.fwhm,
+        fwhm_from=ns.fwhm_from,
         order=ns.order,
         continuum=ns.continuum,
         knots=ns.knots,
@@ -1336,10 +1370,14 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
     run = result.run
 
     print(f"\n{'FWHM':>8s} {'RE':>4s} {'RV1':>9s} {'RV':>9s} {'RV2':>9s}")
+    from_list = ns.fwhm_from == "list"
     for i, (w_in, _w_out, v1, rv, v2) in enumerate(result.history):
-        label = "(FIXED)" if i == len(result.history) - 1 else ""
+        last = i == len(result.history) - 1
+        label = "(FIXED)" if last else "(LIST)" if from_list else ""
         print(f"{w_in:8.3f} {result.core:4.0f} {v1:9.1f} {rv:9.2f} {v2:9.1f}  {label}")
     status = {1: "FWHM CONVERGED", 0: "MAX ITERATIONS REACHED", -1: "FWHM CYCLING", -2: "FWHM OUT OF RANGE"}
+    if from_list and result.convergence == -2:
+        status[-2] = "NO FWHM RELATION FROM THE LIST (first guess kept)"
     print(status[result.convergence])
 
     table = Path(ns.output) if ns.output else companion(ns.spectrum, "_ew.txt")
@@ -1358,7 +1396,7 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
     print(
         f"\nRV {run.rv:.3f} +- {run.rv_error:.3f} km/s (error of the mean; line-to-line sigma {run.rv_sigma:.3f}, "
         f"{len(run.lines)} lines)\nresiduals {run.residual_pct:.3f}%  noise factor {run.noise_factor:.2f}\n{r_lines}\n"
-        f"Common FWHM of the joint fit: {result.fwhm_pix:.3f} pix (R {result.resolution:.0f})"
+        f"{describe_fwhm_model(result)}"
     )
     rejected = Path(ns.rejected) if ns.rejected else companion(ns.spectrum, "_ew_rejected.txt")
     rejected.write_text(format_rejected(run, masks))
@@ -1378,6 +1416,9 @@ def cmd_ew(ns: argparse.Namespace) -> Result:
         "RV": run.rv,
         "eRV": run.rv_sigma,
         "errRV": run.rv_error,
+        "FWHM_from": result.fwhm_model.source,
+        "N_FWHM": len(result.fwhm_model.used),
+        "FWHM_slope": result.fwhm_model.slope,
         "Nlin": len(run.lines),
         "RES(%)": run.residual_pct,
         "CONV": result.convergence,

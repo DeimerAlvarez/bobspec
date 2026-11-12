@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import Literal
 
@@ -51,6 +51,30 @@ log = logging.getLogger(__name__)
 
 MIN_MATCHES = 3
 """Laboratory lines that must match detected lines to accept the preliminary RV."""
+
+BLEND_FRACTION = 0.10
+"""A line is blended if its neighbours absorb more than this fraction of its depth within +-1 FWHM ..."""
+
+BLEND_FLOOR = 0.005
+"""... and more than this fraction of the continuum."""
+
+RESIDUAL_MIN_SEPARATION = 0.75
+"""Lines found in the residuals are added only this many FWHM away from existing lines ..."""
+
+CURVATURE_SMOOTHING = 0.5
+"""Sigma of the smoothing used for the curvature test, in units of the line sigma."""
+
+RESIDUAL_ISOLATION = 1.5
+"""... and, closer than this many FWHM, only if the curvature of the spectrum peaks there
+(:func:`has_curvature_peak`): on the wing of a line wider than the model the residuals show
+a dip that is not a line, and adding it would split the line and let the common FWHM
+collapse."""
+
+COLLAPSE_RATIO = 0.7
+"""Warn when the converged common FWHM is below this fraction of the first guess."""
+
+LIST_MAX_ITER = 10
+"""Maximum number of runs when the FWHM relation is derived from the list lines."""
 
 MIN_RV_HALF_WINDOW = 10.0
 """Smallest half width (km/s) of the RV window used after the first iteration."""
@@ -330,16 +354,18 @@ def amplitude_from_depth(depth: np.ndarray, rho: float) -> np.ndarray:
 class LineFitter:
     """Simultaneous least-squares fit of many saturated Gaussians with a common width.
 
-    The width parameter ``w`` is the FWHM (Angstrom) at ``lam_c``; with
-    ``scale_width`` the FWHM is ``w * lambda / lam_c`` (constant resolving
-    power), otherwise it is ``w`` everywhere.
+    The width parameter ``w`` is the FWHM (Angstrom) at ``lam_c``; at other
+    wavelengths ``FWHM = w * (1 + slope * (lambda - lam_c) / lam_c)``:
+    ``slope = 1`` gives a constant resolving power (FWHM proportional to
+    wavelength), ``slope = 0`` the same FWHM everywhere, and any other value a
+    linear FWHM(lambda) relation (see :func:`fit_fwhm_relation`).
     """
 
     wave: np.ndarray
     norm: np.ndarray
     valid: np.ndarray
     lam_c: float
-    scale_width: bool
+    slope: float
     rho: float
     _rows: np.ndarray = field(init=False, repr=False)
 
@@ -350,7 +376,7 @@ class LineFitter:
     def sigma(self, mu: np.ndarray, w: float) -> np.ndarray:
         """Gaussian sigma (Angstrom) of lines centred at ``mu`` for width parameter ``w``."""
         mu = np.asarray(mu, dtype=float)
-        factor = mu / self.lam_c if self.scale_width else np.ones_like(mu)
+        factor = 1.0 + self.slope * (mu - self.lam_c) / self.lam_c
         return np.asarray(w * FWHM_TO_SIGMA * factor)
 
     def _windows(self, mu0: np.ndarray, w_max: float, dmu: np.ndarray) -> list[slice]:
@@ -470,6 +496,11 @@ class EWSettings:
     Attributes:
         resolution: First-guess resolving power [FW]; None estimates the first
             FWHM from the spectrum (:func:`estimate_fwhm`).
+        fwhm: Fixed FWHM in Angstrom at the central wavelength (no
+            optimisation); it varies with wavelength as set by ``scale_fwhm``.
+        fwhm_from: Lines that set the common FWHM: ``"all"`` the lines detected
+            in the spectrum (DAOSPEC), ``"list"`` the unblended lines of the list
+            (:func:`fit_fwhm_relation`).
         order: Order of the continuum polynomial; -1 keeps the continuum at 1 [ORD].
         continuum: ``"legendre"`` polynomial or cubic ``"spline"``.
         knots: Interior knots of the spline continuum.
@@ -491,6 +522,8 @@ class EWSettings:
     """
 
     resolution: float | None = None
+    fwhm: float | None = None
+    fwhm_from: Literal["all", "list"] = "all"
     order: int = 5
     continuum: ContinuumKind = "legendre"
     knots: int = 10
@@ -514,6 +547,12 @@ class EWSettings:
     def __post_init__(self) -> None:
         if self.resolution is not None and not self.resolution > 0:
             raise ValueError(f"resolution must be positive, got {self.resolution}")
+        if self.fwhm is not None and not self.fwhm > 0:
+            raise ValueError(f"fwhm must be positive, got {self.fwhm}")
+        if self.fwhm is not None and self.fwhm_from == "list":
+            raise ValueError("a fixed fwhm and fwhm_from='list' exclude each other")
+        if self.fwhm_from not in ("all", "list"):
+            raise ValueError(f"fwhm_from must be 'all' or 'list', got {self.fwhm_from!r}")
         if not 0.0 <= self.core < 100.0:
             raise ValueError(f"core must be in [0, 100) percent, got {self.core}")
         if self.order < -1:
@@ -548,6 +587,11 @@ class MeasuredLine:
     """Normalised profile of this line alone, from its own fit, in that window."""
     fit_neighbours: np.ndarray = field(default_factory=lambda: np.empty(0), repr=False)
     """Normalised model of the neighbouring lines (held fixed in the fit) in that window."""
+    width_fitted: bool = False
+    """True if ``fwhm`` comes from the line's own fit (False: from the common width)."""
+    blended: bool = False
+    """True if neighbouring lines absorb, within +-1 FWHM, more than ``BLEND_FRACTION``
+    of the line's depth (and at least ``BLEND_FLOOR`` of the continuum)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -578,6 +622,28 @@ class RunResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FwhmModel:
+    """The common FWHM used for the equivalent widths.
+
+    ``FWHM(lambda) = fwhm * (1 + slope * (lambda - lam_c) / lam_c)`` in the
+    observed frame (see :class:`LineFitter`).
+    """
+
+    fwhm: float
+    slope: float
+    lam_c: float
+    source: Literal["all", "list", "fixed"]
+    used: tuple[float, ...] = ()
+    """Laboratory wavelengths of the lines that defined the relation (source "list")."""
+    n_candidates: int = 0
+    """Unblended lines with their own width fit, before clipping (source "list")."""
+
+    def at(self, wave_obs: np.ndarray) -> np.ndarray:
+        """FWHM (Angstrom) at observed wavelengths ``wave_obs``."""
+        return self.fwhm * (1.0 + self.slope * (np.asarray(wave_obs, float) - self.lam_c) / self.lam_c)
+
+
+@dataclass(frozen=True, slots=True)
 class EWResult:
     """Final result of :func:`measure_ew` (4DAO loop + final fixed-FWHM run)."""
 
@@ -588,6 +654,8 @@ class EWResult:
     """Per iteration: FWHM in, FWHM out (pixels), RV window start, RV, RV window end."""
     step: float
     core: float
+    fwhm_model: FwhmModel
+    """How the common FWHM used for the EWs was set."""
 
     @property
     def fwhm_pix(self) -> float:
@@ -714,6 +782,38 @@ def _detect(
     return np.concatenate(centres), np.concatenate(depths)
 
 
+def has_curvature_peak(
+    wave: np.ndarray,
+    norm: np.ndarray,
+    valid: np.ndarray,
+    centres: np.ndarray,
+    half_width: np.ndarray,
+    sigma_pix: float,
+) -> np.ndarray:
+    """True where the curvature of the line depth has its own positive peak near a centre.
+
+    The curvature is ``-d^2(depth)/d(pixel)^2`` of the spectrum smoothed with a
+    Gaussian of half the line sigma (``gaussian_filter1d`` with ``order=2``):
+    it peaks at the centre of every line, also of a line seen only as a shoulder
+    of a blend (as in DAOSPEC's second-derivative line finder), while on the wing
+    of a single line it has a minimum at about 0.74 FWHM from the centre, where a
+    model that is too narrow leaves residual dips.
+    """
+    depth = 1.0 - _fill(norm, valid)
+    curvature = -gaussian_filter1d(depth, max(CURVATURE_SMOOTHING * sigma_pix, 0.7), order=2, mode="nearest")
+    inner = np.arange(1, wave.size - 1)
+    peak = (
+        (curvature[inner] > curvature[inner - 1]) & (curvature[inner] >= curvature[inner + 1]) & (curvature[inner] > 0)
+    )
+    peaks = wave[inner[peak]]
+    if peaks.size == 0:
+        return np.zeros(np.shape(centres), dtype=bool)
+    pos = np.clip(np.searchsorted(peaks, centres), 1, max(peaks.size - 1, 1))
+    left = np.abs(peaks[pos - 1] - centres)
+    right = np.abs(peaks[np.minimum(pos, peaks.size - 1)] - centres)
+    return np.minimum(left, right) <= half_width
+
+
 def _prune(
     fitter: LineFitter,
     mu: np.ndarray,
@@ -754,14 +854,19 @@ def run_once(
     window: tuple[float, float],
     settings: EWSettings,
     measure_widths: bool = False,
+    slope: float | None = None,
 ) -> RunResult:
     """One DAOSPEC-like run with first-guess FWHM ``w`` (Angstrom at the centre).
 
     With ``measure_widths`` every identified line is also refitted on its own
-    to measure its FWHM (:func:`line_width`).
+    to measure its FWHM (:func:`line_width`). ``slope`` sets how the common
+    FWHM varies with wavelength (see :class:`LineFitter`); by default 1
+    (constant R) or 0 with ``settings.scale_fwhm = False``.
     """
     s = settings
     rho = s.core / 100.0
+    if slope is None:
+        slope = 1.0 if s.scale_fwhm else 0.0
     step = float(np.median(np.diff(wave)))
     lam_c = float(0.5 * (wave[0] + wave[-1]))
     basis = continuum_basis(wave, s.continuum, s.order, s.knots) if s.order >= 0 else None
@@ -776,7 +881,7 @@ def run_once(
     continuum = initial_continuum(flux, basis, valid) if basis is not None else np.ones_like(flux)
     norm = flux / continuum
     noise = pixel_noise(norm, valid)
-    fitter = LineFitter(wave, norm, valid, lam_c, s.scale_fwhm, rho)
+    fitter = LineFitter(wave, norm, valid, lam_c, slope, rho)
     mu, depth = _detect(fitter, 1.0 - norm, valid, w, noise, s.threshold, step)
     fwhm_kms = C_KMS * w / lam_c
     tol_kms = max(0.25 * fwhm_kms, 1.0)
@@ -797,7 +902,7 @@ def run_once(
     amp = amplitude_from_depth(depth, rho)
 
     for iteration in range(s.inner_iter):
-        fitter = LineFitter(wave, norm, valid, lam_c, s.scale_fwhm, rho)
+        fitter = LineFitter(wave, norm, valid, lam_c, slope, rho)
         mu, amp, w, _ = fitter.fit(mu, amp, w, fit_width=fit_width)
         resid_now = norm - 1.0 + fitter.depth(mu, amp, w)
         kappa_now = correlation_factor(resid_now[valid], w / step) if s.correlated_noise else 1.0
@@ -812,11 +917,14 @@ def run_once(
             if new_mu.size:
                 fwhm_new = fitter.sigma(new_mu, w) / FWHM_TO_SIGMA
                 dist = np.min(np.abs(new_mu[:, None] - mu[None, :]), axis=1) if mu.size else np.inf
-                add = dist > 0.75 * fwhm_new
+                near = dist <= RESIDUAL_ISOLATION * fwhm_new  # close to a line already in the model
+                sigma_pix = float(np.median(fwhm_new)) * FWHM_TO_SIGMA / step
+                shoulder = has_curvature_peak(wave, norm, valid, new_mu, 0.25 * fwhm_new, sigma_pix)
+                add = (dist > RESIDUAL_MIN_SEPARATION * fwhm_new) & (~near | shoulder)
                 mu = np.concatenate([mu, new_mu[add]])
                 amp = np.concatenate([amp, amplitude_from_depth(new_depth[add], rho)])
 
-    fitter = LineFitter(wave, norm, valid, lam_c, s.scale_fwhm, rho)
+    fitter = LineFitter(wave, norm, valid, lam_c, slope, rho)
     mu, amp, w, _ = fitter.fit(mu, amp, w, fit_width=fit_width)
     model = 1.0 - fitter.depth(mu, amp, w)
     resid = norm - model
@@ -836,16 +944,22 @@ def run_once(
     lines = []
     for j, k in zip(lab_idx, fit_idx, strict=True):
         centre_k, sigma_k, amp_k = float(mu[k]), float(sig[k]), float(amp[k])  # joint fit (common width)
+        width_fitted = False
         if measure_widths:
             own_centre, own_sigma, own_amp = line_width(fitter, mu, amp, w, int(k), total_depth)
             if np.isfinite(own_sigma):
                 centre_k, sigma_k, amp_k = own_centre, own_sigma, own_amp
+                width_fitted = True
         half_window = 2.0 * float(sig[k]) / FWHM_TO_SIGMA
         win = (wave >= mu[k] - half_window) & (wave <= mu[k] + half_window)
         own_joint = saturated(amp[k] * np.exp(-0.5 * ((wave[win] - mu[k]) / sig[k]) ** 2), rho)
         own_fit = saturated(amp_k * np.exp(-0.5 * ((wave[win] - centre_k) / sigma_k) ** 2), rho)
         fit_flux = 1.0 - own_fit  # the line alone, relative to the continuum
         fit_neighbours = 1.0 - (total_depth[win] - own_joint)  # the other lines, held fixed
+        core = np.abs(wave[win] - mu[k]) <= float(sig[k]) / FWHM_TO_SIGMA  # +-1 FWHM
+        own_depth = float(np.max(own_joint, initial=0.0))
+        neighbour_depth = float(np.max(1.0 - fit_neighbours[core], initial=0.0))
+        blended = neighbour_depth > max(BLEND_FRACTION * own_depth, BLEND_FLOOR)
         fwhm_k = sigma_k / FWHM_TO_SIGMA
         half_k = profile_fwhm(amp_k, sigma_k, rho)
         ew = sig[k] * ew_factor(amp[k], rho)[0] * to_rest * 1000.0
@@ -865,6 +979,8 @@ def run_once(
                 fit_wave=wave[win] * to_rest,
                 fit_flux=fit_flux,
                 fit_neighbours=fit_neighbours,
+                width_fitted=width_fitted,
+                blended=blended,
             )
         )
     not_found = np.setdiff1d(np.arange(lab_w.size), lab_idx)
@@ -890,6 +1006,11 @@ def run_once(
 def measure_ew(spec: Spec, lab_wave: np.ndarray, lab_code: np.ndarray, settings: EWSettings) -> EWResult:
     """Measure equivalent widths with the 4DAO strategy (FWHM convergence, then a fixed-FWHM run).
 
+    With ``settings.fwhm`` the FWHM is fixed from the start. With
+    ``settings.fwhm_from = "list"`` the converged run is followed by a fit of
+    FWHM versus wavelength on the unblended lines of the list
+    (:func:`fit_fwhm_relation`) and a last run with that relation fixed.
+
     Raises:
         EWError: If the spectrum has too few valid pixels or no line can be identified.
     """
@@ -901,7 +1022,9 @@ def measure_ew(spec: Spec, lab_wave: np.ndarray, lab_code: np.ndarray, settings:
     reach = (1 + s.vmin / C_KMS, 1 + s.vmax / C_KMS)
     if not np.any((lab_wave * reach[1] > wave[0]) & (lab_wave * reach[0] < wave[-1])):
         raise EWError(f"no line of the list falls in {wave[0]:.1f}-{wave[-1]:.1f} A for the RV window")
-    if s.resolution is not None:
+    if s.fwhm is not None:
+        w = s.fwhm
+    elif s.resolution is not None:
         w = lam_c / s.resolution
     else:
         try:
@@ -913,7 +1036,11 @@ def measure_ew(spec: Spec, lab_wave: np.ndarray, lab_code: np.ndarray, settings:
     window = (s.rv - 20.0, s.rv + 20.0) if s.rv is not None else (s.vmin, s.vmax)
     history: list[tuple[float, float, float, float, float]] = []
     convergence = 1
-    if not s.fix_fwhm:
+    fixed = s.fix_fwhm or s.fwhm is not None
+    first_guess = w
+    if s.fwhm_from == "list":
+        return _measure_from_list(wave, flux, lab_wave, lab_code, w, window, s, step, lam_c)
+    if not fixed:
         convergence = 0
         seen: list[float] = []
         for _ in range(s.max_iter):
@@ -941,7 +1068,16 @@ def measure_ew(spec: Spec, lab_wave: np.ndarray, lab_code: np.ndarray, settings:
                 window = (result.rv - half, result.rv + half)
     final = run_once(wave, flux, lab_wave, lab_code, w, fit_width=False, window=window, settings=s, measure_widths=True)
     history.append((w / step, final.fwhm / step, window[0], final.rv, window[1]))
-    return EWResult(run=final, convergence=convergence, history=history, step=step, core=s.core)
+    default_slope = 1.0 if s.scale_fwhm else 0.0
+    model = FwhmModel(w, default_slope, lam_c, "fixed" if fixed else "all")
+    if not fixed and w < COLLAPSE_RATIO * first_guess:
+        log.warning(
+            "The common FWHM (%.3f A) is much narrower than the first guess (%.3f A): narrow features such as "
+            "telluric lines may dominate it. Consider --fwhm-from list.",
+            w,
+            first_guess,
+        )
+    return EWResult(run=final, convergence=convergence, history=history, step=step, core=s.core, fwhm_model=model)
 
 
 # ----------------------------------------------------------------------------- files
@@ -1104,3 +1240,130 @@ def profile_fwhm(amp: float, sigma: float, rho: float) -> float:
     half = 0.5 * float(saturated(np.array(amp), rho))
     g_half = half / (1.0 - half / (1.0 - rho))
     return float(2.0 * sigma * np.sqrt(2.0 * np.log(amp / g_half)))
+
+
+def fit_fwhm_relation(
+    lines: Sequence[MeasuredLine],
+    rv: float,
+    lam_c: float,
+    *,
+    constant: bool = False,
+    clip: float = 3.0,
+    min_linear: int = 5,
+    min_lines: int = 3,
+) -> FwhmModel:
+    """FWHM(lambda) from the unblended lines of the list.
+
+    Lines whose own width fit succeeded and that are not blended
+    (:attr:`MeasuredLine.blended`) are fitted with a straight line
+    ``FWHM = a + b (lambda - lam_c)`` (a constant with ``constant`` or fewer
+    than ``min_linear`` lines), rejecting iteratively the lines more than
+    ``clip`` robust sigmas away (remaining blends, narrow features). Works in
+    the observed frame, like the fitter.
+
+    Raises:
+        EWError: If fewer than ``min_lines`` lines are left.
+    """
+    z = 1.0 + rv / C_KMS
+    candidates = [ln for ln in lines if ln.width_fitted and not ln.blended and np.isfinite(ln.fwhm)]
+    if len(candidates) < min_lines:
+        raise EWError(f"only {len(candidates)} unblended lines of the list with a width fit")
+    x = np.array([ln.wave_fit * z for ln in candidates]) - lam_c
+    y = np.array([ln.fwhm * z for ln in candidates])
+    use = np.ones(y.size, dtype=bool)
+    a, b = float(np.median(y)), 0.0
+    for _ in range(20):
+        if constant or np.count_nonzero(use) < min_linear:
+            a, b = float(np.median(y[use])), 0.0
+        else:
+            b, a = (float(v) for v in np.polyfit(x[use], y[use], 1))
+        resid = y - (a + b * x)
+        scale = MAD_TO_SIGMA * float(np.median(np.abs(resid[use] - np.median(resid[use]))))
+        new = np.abs(resid) <= clip * max(scale, 1e-6 * a)
+        if np.array_equal(new, use) or np.count_nonzero(new) < min_lines:
+            break
+        use = new
+    if not a > 0:
+        raise EWError("the FWHM relation from the list lines is not positive")
+    return FwhmModel(
+        fwhm=a,
+        slope=b * lam_c / a,
+        lam_c=lam_c,
+        source="list",
+        used=tuple(ln.wave for ln, u in zip(candidates, use, strict=True) if u),
+        n_candidates=len(candidates),
+    )
+
+
+def _measure_from_list(
+    wave: np.ndarray,
+    flux: np.ndarray,
+    lab_wave: np.ndarray,
+    lab_code: np.ndarray,
+    w: float,
+    window: tuple[float, float],
+    s: EWSettings,
+    step: float,
+    lam_c: float,
+) -> EWResult:
+    """FWHM relation from the unblended lines of the list, iterated with the width never free.
+
+    Every run keeps the FWHM fixed to the current relation (so lines cannot be
+    split into narrower components), measures the identified lines on their
+    own, and refits the relation (:func:`fit_fwhm_relation`), until it changes
+    by less than ``s.tol`` pixels anywhere in the spectrum.
+    """
+    slope = 1.0 if s.scale_fwhm else 0.0
+    model = FwhmModel(w, slope, lam_c, "fixed")
+    history: list[tuple[float, float, float, float, float]] = []
+    edges = np.array([wave[0], wave[-1]])
+    convergence = 0
+    run: RunResult | None = None
+    for _ in range(LIST_MAX_ITER):
+        run = run_once(
+            wave,
+            flux,
+            lab_wave,
+            lab_code,
+            model.fwhm,
+            fit_width=False,
+            window=window,
+            settings=s,
+            measure_widths=True,
+            slope=model.slope,
+        )
+        try:
+            new = fit_fwhm_relation(run.lines, run.rv, lam_c, constant=not s.scale_fwhm)
+        except EWError as exc:
+            log.warning("%s: no FWHM relation from the list, the first-guess FWHM is kept.", exc)
+            convergence = -2
+            break
+        history.append((model.fwhm / step, new.fwhm / step, window[0], run.rv, window[1]))
+        change = float(np.max(np.abs(new.at(edges) - model.at(edges)))) / step
+        model = new
+        if run.rv_sigma > 0 and len(run.lines) >= 3:
+            half = max(5.0 * run.rv_sigma, MIN_RV_HALF_WINDOW)
+            window = (run.rv - half, run.rv + half)
+        if change < s.tol:
+            convergence = 1
+            break
+    final = run_once(
+        wave,
+        flux,
+        lab_wave,
+        lab_code,
+        model.fwhm,
+        fit_width=False,
+        window=window,
+        settings=s,
+        measure_widths=True,
+        slope=model.slope,
+    )
+    history.append((model.fwhm / step, final.fwhm / step, window[0], final.rv, window[1]))
+    if model.source == "list":  # keep the relation used, record the supporting lines of the final run
+        try:
+            check = fit_fwhm_relation(final.lines, final.rv, lam_c, constant=not s.scale_fwhm)
+            model = replace(model, used=check.used, n_candidates=check.n_candidates)
+        except EWError:
+            pass
+    return EWResult(run=final, convergence=convergence, history=history, step=step, core=s.core, fwhm_model=model)

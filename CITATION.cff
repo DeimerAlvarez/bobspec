@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use bobspec in your research, please cite it as below."
 title: "bobspec: interactive and batch tools for one-dimensional stellar spectra"
 type: software
-version: 1.1.2
+version: 1.2.0
 license: MIT
 repository-code: "https://github.com/DeimerAlvarez/bobspec"
 keywords:
